@@ -154,7 +154,7 @@ public sealed class ScannerForm : Form
         // Row: Start (left) | source + pages (right)
         _start.Text = "\u25b6  START SCAN";
         _start.Location = new Point(18, 170);
-        _start.Size = new Size(190, 52);
+        _start.Size = new Size(170, 52);   // stays clear of the Source:/yellow column (x=198)
         _start.Font = new Font("Segoe UI", 12, FontStyle.Bold);
         _start.BackColor = Color.FromArgb(40, 130, 60);
         _start.ForeColor = Color.White;
