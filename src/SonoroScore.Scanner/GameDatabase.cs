@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace SonoroScore.Scanner;
@@ -106,6 +106,11 @@ public static class GameDatabase
         // Fetch from nanoka API
         log?.Invoke($"[DB] Fetching echo catalog from {ApiUrl} ...");
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        // static.nanoka.cc answers 403 to clients without a User-Agent (verified with
+        // urllib; keep the live fetch working when no local cache exists).
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SonoroScore/1.0");
+        http.DefaultRequestHeaders.TryAddWithoutValidation("Referer", "https://nanoka.cc/");
         string json = await http.GetStringAsync(ApiUrl);
 
         // Parse the nanoka format (dict keyed by ID)

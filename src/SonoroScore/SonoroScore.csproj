@@ -46,4 +46,14 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
+
+  <!-- Echo catalog snapshot (nanoka 3.6): offline seed for the local cache the scanner
+       reads next to the exe. Shipping it via the project stops a publish from carrying
+       a stale hand-copied catalog (1.0.0 shipped one with wrong sonata pools). -->
+  <ItemGroup>
+    <None Include="echo_catalog.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
 </Project>

@@ -224,6 +224,49 @@ public sealed class ScannerForm : Form
         Controls.Add(_studio);
     }
 
+    /// <summary>
+    /// Save the OCR results into the session folder under the name the review studio
+    /// looks for ("scan_results_*.json"), so "Open Review Studio" shows the echoes
+    /// instead of PENDING_SCAN stubs. Same shape the CLI writes.
+    /// </summary>
+    private async Task SaveSessionResultsAsync(string sessionDir)
+    {
+        var results = _results;
+        if (results == null || results.Count == 0) return;
+        try
+        {
+            int total = results.Count;
+            int names = results.Count(r => r.EchoName?.Value != null);
+            int stats = results.Count(r => r.MainStatKey?.Value != null);
+            int stats2 = results.Count(r => r.SecondMainStatKey?.Value != null);
+            int complete = results.Count(r => !r.NeedsReview);
+            float avgSubs = (float)results.Average(r => r.Substats.Count);
+            var summary = new ScanSessionResult
+            {
+                SessionPath = sessionDir,
+                RunAt = DateTime.UtcNow,
+                DatabaseVersion = GameDatabase.DataVersion,
+                TotalImages = total,
+                SuccessfulScans = names,
+                CompleteEchoes = complete,
+                NameDetectionRate = (float)names / total,
+                MainStatDetectionRate = (float)stats / total,
+                SecondMainStatDetectionRate = (float)stats2 / total,
+                SubstatAvg = avgSubs,
+                Results = results,
+            };
+            string path = Path.Combine(sessionDir, $"scan_results_{DateTime.Now:yyyyMMdd_HHmmss}.json");
+            await File.WriteAllTextAsync(path,
+                System.Text.Json.JsonSerializer.Serialize(summary,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            AppendLog("saved: " + Path.GetFileName(path));
+        }
+        catch (Exception ex)
+        {
+            AppendLog("saving scan results failed: " + ex.Message);
+        }
+    }
+
     private void AppendLog(string line)
     {
         if (_log.TextLength > 20000) _log.Clear();   // keep it bounded on huge runs
@@ -484,6 +527,7 @@ public sealed class ScannerForm : Form
             _status.ForeColor = Color.FromArgb(40, 130, 60);
             _progressLabel.Text = $"OCR 100 % \u2014 {total} echoes read, {flagged} flagged for review \u2014 {sessionDir}";
             AppendLog($"done: {total} echoes read, {flagged} flagged");
+            await SaveSessionResultsAsync(sessionDir);
             _export.Enabled = total > 0;
         }
         catch (OperationCanceledException)
@@ -502,6 +546,7 @@ public sealed class ScannerForm : Form
                 }, CancellationToken.None).ConfigureAwait(true);
                 int read = _results?.Count ?? 0;
                 _progressLabel.Text = $"Stopped \u2014 OCR finished on the captured pages ({read} echoes).";
+                await SaveSessionResultsAsync(sessionDir);
             }
             catch (Exception ex)
             {

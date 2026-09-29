@@ -32,6 +32,11 @@
     <Content Include="fixtures\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!-- Single source with the app project: the catalog lives in src/SonoroScore/. -->
+    <Content Include="..\SonoroScore\echo_catalog.json">
+      <Link>fixtures\catalog\echo_catalog.json</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

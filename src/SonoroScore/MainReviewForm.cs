@@ -607,7 +607,12 @@ public partial class MainReviewForm : Form
 
     private async Task OpenFolderDialogAsync()
     {
+        // Start in the scanner's own sessions folder (fall back to the legacy root
+        // when it has captures) instead of whatever Windows last remembered.
+        string sessionsRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sessions");
         using var fbd = new FolderBrowserDialog();
+        if (Directory.Exists(sessionsRoot))
+            fbd.SelectedPath = sessionsRoot;
         if (fbd.ShowDialog() == DialogResult.OK)
         {
             await LoadFolderSessionAsync(fbd.SelectedPath);
