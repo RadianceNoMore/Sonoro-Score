@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
@@ -19,8 +19,8 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <!-- F-40: templates extracted from our own verified captures. The matcher prefers
-         this file over the shipped reference set. Regenerate with the extraction
-         command documented in the project notes / Appendix A. -->
+         this file over the shipped reference set. Regenerate with the CLI
+         --extract-sonata-templates command. -->
     <None Update="sonata_signatures_local.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

@@ -1,7 +1,7 @@
 ﻿// © 2026 RadianceNoMore (Sonoro-Score, MIT).
 // Fixture-corpus runner: 1080p panel PNG + verified/unverified sidecar per sample.
 // Unverified fixtures pin current output exactly (any drift fails → re-baseline).
-// Verified fixtures score toward the 0.95 corpus floor. See the project notes §6.
+// Verified fixtures score toward the 0.95 corpus floor.
 
 using System.Text.Json;
 using System.Drawing;

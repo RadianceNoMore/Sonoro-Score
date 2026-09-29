@@ -101,7 +101,6 @@ Every field that cannot be resolved is **flagged for review — never invented**
 | Tacet-Lab import validation | passes Tacet-Lab's own `validateAccount` — 0/300 rejected |
 | Automated tests | 125/125 green |
 
-Method + full A/B history: `the project notes`.
 
 ---
 
@@ -169,7 +168,6 @@ Sonoro-Score/
 ├── SonoroScore.sln
 ├── Directory.Build.props            # shared version (1.7.0; SS carries its own 1.0.0)
 ├── NOTICES.md                       # third-party licenses (see Credits below)
-├── the project notes                          # accuracy plan + measured A/B history
 ├── assets/                          # pinned OCR model, icons, Interception package
 ├── dist/                            # release zips + notes (git-ignored)
 ├── src/
