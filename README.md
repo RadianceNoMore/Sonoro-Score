@@ -18,7 +18,9 @@
 the Interception driver (one-time install, bundled) · Administrator rights
 (SS asks for them — required to send input to the game) · the free
 **.NET Desktop Runtime 8 (x64)** — only for the regular zip (the `-bundled`
-zip has it inside).
+zip has it inside). It is a ~60 MB one-time install
+(`winget install Microsoft.DotNet.DesktopRuntime.8` or the link in the zip's
+`README-FIRST.txt`).
 
 ### 1 · Get the app
 Download from

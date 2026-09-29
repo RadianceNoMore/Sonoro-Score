@@ -39,8 +39,10 @@ EXCLUDE_WPF_NATIVES = {
 
 README = """SonoroScore {version} - automatic echo scanner for Wuthering Waves
 
-Before first run: this build needs the free .NET Desktop Runtime 8 (x64),
-one-time install from https://dotnet.microsoft.com/download/dotnet/8.0
+Before first run: this build needs the free .NET Desktop Runtime 8 (x64) -
+a ~60 MB one-time install. Easiest: open a terminal and run
+    winget install Microsoft.DotNet.DesktopRuntime.8
+or download it from https://dotnet.microsoft.com/download/dotnet/8.0
 (prefer zero installs? use the "-bundled" zip - it has the runtime inside.)
 
 1. Install the Interception driver (REQUIRED - SS refuses to scan without it):
@@ -66,8 +68,10 @@ NOTICES.md. The bundled Interception driver package is LGPL-3.0 for non-commerci
 use (license texts included).
 """
 
-RUNTIME_PARA = """Before first run: this build needs the free .NET Desktop Runtime 8 (x64),
-one-time install from https://dotnet.microsoft.com/download/dotnet/8.0
+RUNTIME_PARA = """Before first run: this build needs the free .NET Desktop Runtime 8 (x64) -
+a ~60 MB one-time install. Easiest: open a terminal and run
+    winget install Microsoft.DotNet.DesktopRuntime.8
+or download it from https://dotnet.microsoft.com/download/dotnet/8.0
 (prefer zero installs? use the "-bundled" zip - it has the runtime inside.)
 
 """
