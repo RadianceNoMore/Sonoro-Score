@@ -19,22 +19,11 @@ the Interception driver (one-time install, bundled) · Administrator rights
 (SS asks for them — required to send input to the game).
 
 ### 1 · Get the app
-Download `SonoroScore-1.0.0-win64.zip` from
+Download from
 [Releases](https://github.com/RadianceNoMore/Sonoro-Score/releases) and extract it
 anywhere. Everything else is bundled — no .NET install needed.
 
-### 2 · Install the Interception driver (once)
-Open **Command Prompt as Administrator** and run:
-
-```bat
-"<extract folder>\SonoroScore-1.0.0\Interception\command line installer\install-interception.exe" /install
-```
-
-Then **reboot once.** (SS uses Interception's virtual-HID driver to drive the game
-without touching your real mouse/keyboard. It is a hard requirement — SS refuses
-to scan without it, rather than falling back to a mode that fights your cursor.)
-
-### 3 · Scan
+### 2 · Scan
 1. Launch **`SonoroScore.exe`** and accept the Administrator prompt.
 2. In the game, open the **echo inventory** screen.
 3. In SS press **START SCAN** — it captures and reads every echo panel by itself.
