@@ -1,11 +1,11 @@
-using System;
+﻿using System;
 
 namespace SonoroScore.Scanner;
 
 /// <summary>
 /// Pure helpers for the substat pipeline.
 ///
-/// Rules of engagement (see the project notes):
+/// Rules of engagement:
 ///   - Never silently drop a real OCR row.
 ///   - A substat MAY legitimately share a main stat's key: an echo has two main
 ///     stats (primary + secondary) and the game allows substats to equal a main
