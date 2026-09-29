@@ -1,4 +1,4 @@
-﻿{
+{
     "fixtureVersion":  1,
     "layout":  "echo-detail",
     "resolution":  {
@@ -109,6 +109,10 @@
                            "value":  2280
                        },
     "subStats":  [
+                     {
+                         "key":  "atkPercent",
+                         "value":  7.1
+                     },
                      {
                          "key":  "def",
                          "value":  50

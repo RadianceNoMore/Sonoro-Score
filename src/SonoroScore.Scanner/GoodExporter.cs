@@ -119,11 +119,18 @@ public static class GoodExporter
                 if (subs.Count >= 9) break; // GOOD totalRolls cap context; keep bounded
             }
 
+            // E-01/E-04: skip rather than launder.
+            if (e.Cost is not (1 or 3 or 4)) { skipped++; continue; }
+            if (e.Rarity is < 1 or > 5) { skipped++; continue; }
+            if (e.Level is < 0 or > 25) { skipped++; continue; }
+            if (string.IsNullOrWhiteSpace(e.Sonata)) { skipped++; continue; }
+
             artifacts.Add(new GoodArtifact(
                 SetKey: ToGoodSetKey(e.Sonata),
                 SlotKey: ToGoodSlot(e.Cost),
-                Level: Math.Clamp(e.Level, 0, 20), // GOOD levels are 0-20; true level in wuwaLevel
-                Rarity: Math.Clamp(e.Rarity, 1, 5),
+                // GOOD levels are 0-20 by spec; the true WuWa level travels in wuwaLevel.
+                Level: Math.Min(e.Level, 20),
+                Rarity: e.Rarity,
                 MainStatKey: ToGoodStatKey(e.MainStatKey),
                 Location: e.EquippedBy ?? "",
                 Lock: false,
@@ -143,24 +150,40 @@ public static class GoodExporter
             Artifacts: artifacts,
             Weapons: []);
 
-        return JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true });
+        string json = JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true });
+
+        // E-04: self-check the payload against the GOOD v3 shape before writing.
+        var problems = PayloadValidator.ValidateGood(json);
+        if (problems.Count > 0) throw new ExportSchemaException("GOOD v3", problems);
+
+        return json;
     }
 
     public static string Export(IEnumerable<ExportableEcho> echoes)
         => Export(echoes, out _);
 
     public static string ExportScans(IEnumerable<EchoScanResult> scans, out int skipped)
+        => ExportScans(scans, ExportPolicy.Strict, out skipped, out _);
+
+    /// <summary>
+    /// E-01/E-03: export scans under an explicit policy and report exactly which
+    /// echoes were refused and why.
+    /// </summary>
+    public static string ExportScans(IEnumerable<EchoScanResult> scans, ExportPolicy policy,
+                                     out int skipped, out List<ExportRejection> rejected)
     {
         var models = new List<ExportableEcho>();
-        int noMainStat = 0;
+        rejected = new List<ExportRejection>();
         foreach (var s in scans)
         {
-            var m = ExportableEcho.FromScanResult(s);
-            if (m == null) noMainStat++;
-            else models.Add(m);
+            var outcome = ExportableEcho.FromScanResult(s, policy);
+            if (outcome.Echo == null)
+                rejected.Add(new ExportRejection(s.ImageFile, outcome.Rejected));
+            else
+                models.Add(outcome.Echo);
         }
         string json = Export(models, out int skippedModels);
-        skipped = noMainStat + skippedModels;
+        skipped = rejected.Count + skippedModels;
         return json;
     }
 

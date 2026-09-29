@@ -1,4 +1,4 @@
-// © 2026 RadianceNoMore (Sonoro-Score, MIT).
+﻿// © 2026 RadianceNoMore (Sonoro-Score, MIT).
 // Field preprocessing ported from Tacet-Lab (https://github.com/DJ12421/Tacet-Lab,
 // GPL-3.0) src/scanner/preprocess.worker.ts + ocr-pool.ts engine parameters.
 // See NOTICES.md.
@@ -87,6 +87,78 @@ public static class EchoFieldPreprocessor
         }
 
         return RenderBinary(binary, w, h);
+    }
+
+    /// <summary>
+    /// F-38 alternative binarisation: a LOCAL (adaptive mean) threshold instead of the
+    /// global Otsu in <see cref="Process"/>. The global pass can swallow a whole label
+    /// band when a gradient pulls the block's histogram dark (measured on idx042/043/085:
+    /// labels came back as fragments such as "ckDMG Bonus", values stranded far right).
+    /// Measured on the same blocks, the local pass keeps the labels separable. Used only
+    /// as a RETRY when the primary pass left substat slots unresolved.
+    /// </summary>
+    public static Bitmap ProcessAdaptive(Bitmap panel, RectangleF region, int window = 13, int c = 16, int padPx = 0)
+    {
+        var rel = EchoRegions.ToPixels(region, panel.Width, panel.Height);
+
+        int sx = Math.Clamp(rel.X - padPx, 0, panel.Width - 1);
+        int sy = Math.Clamp(rel.Y - padPx, 0, panel.Height - 1);
+        int sw = Math.Clamp(rel.Width + padPx * 2, 1, panel.Width - sx);
+        int sh = Math.Clamp(rel.Height + padPx * 2, 1, panel.Height - sy);
+
+        int w = Math.Max(1, sw * 3);
+        int h = Math.Max(1, sh * 3);
+        byte[] gray;
+        using (var scaled = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+        {
+            using (var g = Graphics.FromImage(scaled))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.DrawImage(panel, new Rectangle(0, 0, w, h), new Rectangle(sx, sy, sw, sh), GraphicsUnit.Pixel);
+            }
+            gray = ToGrayscale(scaled);
+        }
+
+        gray = EnsureLightBackground(gray, w, h);
+        byte[] binary = AdaptiveThreshold(gray, w, h, window, c);
+        return RenderBinary(binary, w, h);
+    }
+
+    /// <summary>
+    /// Mean-of-local-window threshold via an integral image: ink where a pixel is
+    /// darker than its neighbourhood mean minus <paramref name="c"/>. Local thresholds
+    /// survive brightness gradients that defeat a single global cut.
+    /// </summary>
+    private static byte[] AdaptiveThreshold(byte[] values, int w, int h, int window, int c)
+    {
+        int r = Math.Max(1, window / 2);
+        long[] integral = new long[(w + 1) * (h + 1)];
+        for (int y = 0; y < h; y++)
+        {
+            long row = 0;
+            for (int x = 0; x < w; x++)
+            {
+                row += values[y * w + x];
+                integral[(y + 1) * (w + 1) + (x + 1)] = integral[y * (w + 1) + (x + 1)] + row;
+            }
+        }
+
+        byte[] output = new byte[values.Length];
+        for (int y = 0; y < h; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                int x0 = Math.Max(0, x - r), y0 = Math.Max(0, y - r);
+                int x1 = Math.Min(w - 1, x + r), y1 = Math.Min(h - 1, y + r);
+                long sum = integral[(y1 + 1) * (w + 1) + (x1 + 1)] - integral[y0 * (w + 1) + (x1 + 1)]
+                         - integral[(y1 + 1) * (w + 1) + x0] + integral[y0 * (w + 1) + x0];
+                long area = (long)(x1 - x0 + 1) * (y1 - y0 + 1);
+                int mean = (int)(sum / area);
+                output[y * w + x] = values[y * w + x] < mean - c ? (byte)0 : (byte)255;
+            }
+        }
+        return output;
     }
 
     // ── Grayscale I/O (LockBits, no unsafe) ─────────────────────────────────

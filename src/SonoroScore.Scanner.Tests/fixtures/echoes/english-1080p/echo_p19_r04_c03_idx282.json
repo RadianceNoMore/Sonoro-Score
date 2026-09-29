@@ -102,7 +102,7 @@
     "sonata":  "Windward Pilgrimage",
     "mainStat":  {
                      "key":  "critRate",
-                     "value":  44
+                     "value":  4.4
                  },
     "secondMainStat":  {
                            "key":  "atk",

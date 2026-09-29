@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Reflection;
 using System.Threading.Tasks;
 using Tesseract;
 
@@ -29,7 +30,23 @@ public static class TesseractOcr
         get
         {
             try { return _engine.Value != null; }
-            catch { return false; }
+            catch (System.Exception ex) { LastInitError = ex.GetType().Name + ": " + ex.Message; return false; }
+        }
+    }
+
+    /// <summary>
+    /// Human-readable reason Tesseract cannot run (null when it is healthy).
+    /// Callers surface this instead of silently degrading to Windows OCR.
+    /// </summary>
+    public static string? UnavailableReason
+    {
+        get
+        {
+            if (IsAvailable) return null;
+            string langFile = Path.Combine(TessDataPath, Language + ".traineddata");
+            if (!File.Exists(langFile))
+                return $"missing language file '{langFile}'";
+            return LastInitError ?? $"engine failed to initialise (tessdata at '{TessDataPath}')";
         }
     }
 
@@ -39,8 +56,15 @@ public static class TesseractOcr
     /// <summary>Digit vocabulary for number strips (Tacet ocr-pool numberWhitelist).</summary>
     public const string NumberWhitelist = "0123456789+-.,:%";
 
+    /// <summary>
+    /// Message from the last engine-initialization failure (null when healthy).
+    /// Diagnostics must never be swallowed silently (TODO rule 4).
+    /// </summary>
+    public static string? LastInitError { get; private set; }
+
     private static readonly Lazy<TesseractEngine> _engine = new(() =>
     {
+        ConfigureNativeSearchPath();
         // LSTM-only, mirroring Tacet's tesseract.js worker (OEM 1).
         var engine = new TesseractEngine(TessDataPath, Language, EngineMode.LstmOnly);
         engine.SetVariable("preserve_interword_spaces", "1");
@@ -50,6 +74,29 @@ public static class TesseractOcr
     });
 
     private static TesseractEngine Engine => _engine.Value;
+
+    /// <summary>
+    /// Tesseract.NET's native loader (InteropDotNet) resolves tesseract50.dll /
+    /// leptonica-1.82.0.dll from the *executing assembly's directory*. Under
+    /// <c>PublishSingleFile</c> that location is empty, so its probe throws
+    /// (<c>Path.Combine(null, ...)</c>) and Tesseract silently disappears - the
+    /// scanner then quietly degrades to Windows OCR. Point the loader at the app
+    /// directory, where the x64/x86 native folders shipped next to the exe live.
+    /// </summary>
+    private static void ConfigureNativeSearchPath()
+    {
+        try
+        {
+            var loaderType = typeof(TesseractEngine).Assembly.GetType("InteropDotNet.LibraryLoader");
+            var instance = loaderType?
+                .GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic)?
+                .GetValue(null);
+            loaderType?
+                .GetProperty("CustomSearchPath", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)?
+                .SetValue(instance, AppContext.BaseDirectory);
+        }
+        catch { /* non-single-file layouts already resolve their natives */ }
+    }
 
     /// <summary>
     /// Convert a GDI bitmap to a Leptonica Pix via an in-memory PNG
@@ -77,6 +124,22 @@ public static class TesseractOcr
             using var pix = ToPix(bmp);
             using var page = Engine.Process(pix, (PageSegMode?)mode);
             return page.GetText();
+        });
+    }
+
+    /// <summary>
+    /// Run OCR on a crop and return the text together with the page's mean
+    /// confidence, normalised to [0,1] (D-01).
+    /// </summary>
+    public static async Task<(string Text, float Confidence)> RecognizeWithConfidenceAsync(
+        Bitmap bmp, PageSegMode mode = PageSegMode.Auto, string? whitelist = null)
+    {
+        return await Task.Run(() =>
+        {
+            if (whitelist != null) Engine.SetVariable("tessedit_char_whitelist", whitelist);
+            using var pix = ToPix(bmp);
+            using var page = Engine.Process(pix, (PageSegMode?)mode);
+            return (page.GetText(), page.GetMeanConfidence());
         });
     }
 
@@ -110,7 +173,10 @@ public static class TesseractOcr
                         {
                             x = box.X1; y = box.Y1; w = box.Width; h = box.Height;
                         }
-                        result.Add(new OcrLineInfo(text.Trim(), y, x, w, h));
+                        // Tesseract reports confidence in 0..100; normalise to 0..1 (D-01).
+                        double conf = 0;
+                        try { conf = iter.GetConfidence(PageIteratorLevel.TextLine) / 100.0; } catch { }
+                        result.Add(new OcrLineInfo(text.Trim(), y, x, w, h, conf, "Tesseract"));
                     }
                 }
             } while (iter.Next(PageIteratorLevel.TextLine));

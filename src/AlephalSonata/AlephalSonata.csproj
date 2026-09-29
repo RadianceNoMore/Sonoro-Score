@@ -17,4 +17,12 @@
     <ProjectReference Include="..\SonoroScore.Scanner\SonoroScore.Scanner.csproj" />
   </ItemGroup>
 
+  <!-- Pinned OCR model: must sit in tessdata/ next to the exe. Shipping it via the
+       project stops a publish from silently losing it (which silently degrades OCR). -->
+  <ItemGroup>
+    <None Include="..\..\assets\tessdata\eng.traineddata" Link="tessdata\eng.traineddata">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
 </Project>

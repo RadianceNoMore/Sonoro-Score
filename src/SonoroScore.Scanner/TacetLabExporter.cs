@@ -93,9 +93,13 @@ public static class TacetLabExporter
                 continue;
             }
 
-            int cost = e.Cost is 1 or 3 or 4 ? e.Cost : 1;
-            int rarity = Math.Clamp(e.Rarity, 1, 5);
-            int level = Math.Clamp(e.Level, 0, 25);
+            // E-01/E-04: no silent defaults. A value the schema cannot accept means the
+            // echo is SKIPPED, never laundered into a plausible one (old code turned a
+            // bad cost into 1, a bad level into 0, a missing sonata into "").
+            if (e.Cost is not (1 or 3 or 4)) { skipped++; continue; }
+            if (e.Rarity is < 1 or > 5) { skipped++; continue; }
+            if (e.Level is < 0 or > 25) { skipped++; continue; }
+            if (string.IsNullOrWhiteSpace(e.Sonata)) { skipped++; continue; }
 
             var subs = new List<TacetStatLine>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -108,17 +112,17 @@ public static class TacetLabExporter
             }
 
             string safeName = new string(e.Name.Where(char.IsLetterOrDigit).ToArray());
-            if (string.IsNullOrEmpty(safeName)) safeName = "echo";
+            if (string.IsNullOrEmpty(safeName)) { skipped++; continue; }   // E-01: no "echo" placeholder
             string id = $"sonoro_{baseMs}_{i:000}_{safeName}";
             string equippedName = string.IsNullOrWhiteSpace(e.EquippedBy) ? "" : e.EquippedBy.Trim();
 
             list.Add(new TacetEcho(
                 Id: id,
                 Name: e.Name,
-                Cost: cost,
-                Rarity: rarity,
-                Level: level,
-                Sonata: e.Sonata ?? "",
+                Cost: e.Cost,
+                Rarity: e.Rarity,
+                Level: e.Level,
+                Sonata: e.Sonata,
                 MainStat: new TacetStatLine(mainKey, e.MainStatValue),
                 SubStats: subs,
                 Locked: false,
@@ -155,7 +159,14 @@ public static class TacetLabExporter
                 CharacterSubstatWeights: new Dictionary<string, object>(),
                 CharacterEnergyRegenMinimums: new Dictionary<string, object>()));
 
-        return JsonSerializer.Serialize(backup, new JsonSerializerOptions { WriteIndented = true });
+        string json = JsonSerializer.Serialize(backup, new JsonSerializerOptions { WriteIndented = true });
+
+        // E-04: the bytes we are about to write must satisfy the schema Tacet-Lab
+        // itself enforces (isEcho / validateAccount). Abort rather than write junk.
+        var problems = PayloadValidator.ValidateTacet(json);
+        if (problems.Count > 0) throw new ExportSchemaException("Tacet-Lab v7", problems);
+
+        return json;
     }
 
     public static string Export(IEnumerable<ExportableEcho> echoes)
@@ -163,17 +174,27 @@ public static class TacetLabExporter
 
     /// <summary>Export scan results directly (skips entries with unknown main stat).</summary>
     public static string ExportScans(IEnumerable<EchoScanResult> scans, out int skipped)
+        => ExportScans(scans, ExportPolicy.Strict, out skipped, out _);
+
+    /// <summary>
+    /// E-01/E-03: export scans under an explicit policy and report exactly which
+    /// echoes were refused and why.
+    /// </summary>
+    public static string ExportScans(IEnumerable<EchoScanResult> scans, ExportPolicy policy,
+                                     out int skipped, out List<ExportRejection> rejected)
     {
         var models = new List<ExportableEcho>();
-        int noMainStat = 0;
+        rejected = new List<ExportRejection>();
         foreach (var s in scans)
         {
-            var m = ExportableEcho.FromScanResult(s);
-            if (m == null) noMainStat++;
-            else models.Add(m);
+            var outcome = ExportableEcho.FromScanResult(s, policy);
+            if (outcome.Echo == null)
+                rejected.Add(new ExportRejection(s.ImageFile, outcome.Rejected));
+            else
+                models.Add(outcome.Echo);
         }
         string json = Export(models, out int skippedModels);
-        skipped = noMainStat + skippedModels;
+        skipped = rejected.Count + skippedModels;
         return json;
     }
 

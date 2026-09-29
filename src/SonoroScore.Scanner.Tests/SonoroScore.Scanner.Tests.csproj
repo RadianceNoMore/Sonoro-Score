@@ -17,11 +17,13 @@
     <ProjectReference Include="..\SonoroScore.Scanner\SonoroScore.Scanner.csproj" />
   </ItemGroup>
 
-  <!-- Deterministic OCR dependencies: fast tessdata + sonata signatures next to the testhost. -->
+  <!-- Deterministic OCR dependencies: ONE pinned tessdata model, shared with the apps, so
+       dev/test and the shipped binaries run the SAME engine model. -->
   <ItemGroup>
-    <Content Include="tessdata\eng.traineddata">
+    <None Include="..\..\assets\tessdata\eng.traineddata" Link="tessdata\eng.traineddata">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
     <Content Include="..\SonoroScore.Scanner\sonata_signatures.json">
       <Link>sonata_signatures.json</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

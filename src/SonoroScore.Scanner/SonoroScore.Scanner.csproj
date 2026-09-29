@@ -18,6 +18,15 @@
     <None Update="sonata_signatures.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <!-- F-40: templates extracted from our own verified captures. The matcher prefers
+         this file over the shipped reference set. Regenerate with the extraction
+         command documented in the project notes / Appendix A. -->
+    <None Update="sonata_signatures_local.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="ocr_confusions.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

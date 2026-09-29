@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text.RegularExpressions;
@@ -95,10 +95,30 @@ public static class StatParser
             return null;
 
         StatKey? key = MatchLabel(labelPart);
+        if (key == null)
+        {
+            // OCR sometimes leaves a stray glyph between label and value ("ATK j 100",
+            // "DEF Co 12.8%"): the value regex still matches with the junk in the label,
+            // and the exact alias then fails. Retry with up to two trailing tokens
+            // dropped - the alias match itself stays EXACT, so nothing fuzzy sneaks in.
+            string probe = labelPart;
+            for (int drop = 0; drop < 2 && key == null; drop++)
+            {
+                int sp = probe.LastIndexOf(' ');
+                if (sp <= 0) break;
+                probe = probe[..sp].TrimEnd();
+                if (probe.Length == 0) break;
+                key = MatchLabel(probe);
+            }
+            if (key != null) labelPart = probe;
+        }
         if (key == null) return null;
 
-        // Decimal recovery for percentages: e.g. "840%" -> "8.4%" or "69%" -> "6.9%"
-        if (isPercent && value > 50 && key is not StatKey.Hp and not StatKey.Atk and not StatKey.Def)
+        // Decimal recovery for percentages: e.g. "840%" -> "8.4%" or "79%" -> "7.9%".
+        // Applies to EVERY key once the value carries a percent sign: no percent-typed
+        // stat rolls anywhere near 50, so a larger value can only be a dropped decimal
+        // point (F-11). The old ATK/HP/DEF exemption let OCR "ATK 79%" stay AtkPercent 79.
+        if (isPercent && value > 50)
         {
             while (value > 50) value /= 10f;
         }

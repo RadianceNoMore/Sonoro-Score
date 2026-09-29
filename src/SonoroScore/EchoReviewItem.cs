@@ -98,10 +98,12 @@ public class EchoReviewItem
     public bool IsEdited { get; set; }
     public bool IsVerified { get; set; }
 
+    /// <summary>C-02: the level decides how many substats must be present.
+    /// Replaces the old hard-coded "&gt;= 4", which was wrong below level 20.</summary>
     [JsonIgnore]
-    public bool IsComplete => !string.IsNullOrEmpty(EchoName) && EchoName != "UNKNOWN"
-                              && !string.IsNullOrEmpty(MainStatKey) && MainStatKey != "Unknown"
-                              && Substats.Count(s => s.IsActive) >= 4;
+    public bool SatisfiesSubstatRule => !string.IsNullOrEmpty(EchoName) && EchoName != "UNKNOWN"
+                                        && !string.IsNullOrEmpty(MainStatKey) && MainStatKey != "Unknown"
+                                        && Substats.Count(s => s.IsActive) >= EchoRules.ExpectedSubstatCount(Level);
 
     [JsonIgnore]
     public string DisplayStatus
@@ -111,7 +113,7 @@ public class EchoReviewItem
             if (IsVerified) return "✓ Verified";
             if (IsEdited) return "✏ Edited";
             if (Errors.Count > 0) return "✗ Error";
-            if (IsComplete) return "🟢 Complete";
+            if (SatisfiesSubstatRule) return "🟢 Complete";
             return "🟡 Partial";
         }
     }

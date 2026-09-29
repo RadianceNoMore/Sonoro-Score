@@ -75,11 +75,16 @@ public static class WinOcr
             double x = line.Words.First().BoundingRect.X;
             double w = line.Words.Last().BoundingRect.Right - x;
             double h = line.Words.Max(w => w.BoundingRect.Height);
-            list.Add(new OcrLineInfo(line.Text, y, x, w, h));
+            list.Add(new OcrLineInfo(line.Text, y, x, w, h, null, "Win"));
         }
         return list;
     }
 }
 
-public record OcrLineInfo(string Text, double Y, double X, double Width, double Height);
+/// <summary>
+/// One OCR line. <paramref name="Confidence"/> is normalised to [0,1] and is null
+/// when the engine cannot report one (Windows OCR) - D-01.
+/// </summary>
+public record OcrLineInfo(string Text, double Y, double X, double Width, double Height,
+                          double? Confidence = null, string Engine = "Tesseract");
 

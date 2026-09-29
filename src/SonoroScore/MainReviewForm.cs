@@ -257,6 +257,10 @@ public partial class MainReviewForm : Form
                 Math.Max(_contentSplit.Panel1MinSize, _contentSplit.Width - _contentSplit.Panel2MinSize - _contentSplit.SplitterWidth));
         }
         catch { /* keep designer defaults */ }
+
+        if (!TesseractOcr.IsAvailable)
+            _statusLabel.Text = "WARNING: Tesseract unavailable - scans fall back to Windows OCR (less accurate). " +
+                                (TesseractOcr.UnavailableReason ?? "");
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -689,6 +693,7 @@ public partial class MainReviewForm : Form
                 _allItems.Add(EchoReviewItem.FromScanResult(record));
             }
 
+            MergeVerifiedEdits(Path.GetDirectoryName(jsonPath), _currentSessionPath);
             _sessionInfoLabel.Text = $"{Path.GetFileName(_currentSessionPath)} | {_allItems.Count} Echoes ({Path.GetFileName(jsonPath)})";
             _statusLabel.Text = $"Loaded {_allItems.Count} echoes from {Path.GetFileName(jsonPath)}" +
                                 (relinked > 0 ? $" ({relinked} images relinked)" : "") +
@@ -870,8 +875,8 @@ public partial class MainReviewForm : Form
 
             bool matchesFilter = filterMode switch
             {
-                1 => item.IsComplete,
-                2 => !item.IsComplete,
+                1 => item.SatisfiesSubstatRule,
+                2 => !item.SatisfiesSubstatRule,
                 3 => item.IsVerified || item.IsEdited,
                 _ => true
             };
@@ -888,7 +893,7 @@ public partial class MainReviewForm : Form
                 lvi.ForeColor = item.IsVerified ? AccentGreen
                     : item.IsEdited ? AccentAmber
                     : item.Errors.Count > 0 ? AccentRed
-                    : item.IsComplete ? FgPrimary : FgSecondary;
+                    : item.SatisfiesSubstatRule ? FgPrimary : FgSecondary;
 
                 _echoListView.Items.Add(lvi);
             }
@@ -1083,6 +1088,12 @@ public partial class MainReviewForm : Form
         var item = _filteredItems[_currentIndex];
 
         _statusLabel.Text = $"Re-scanning {item.ImageFileName}...";
+        if (!TesseractOcr.IsAvailable)
+            MessageBox.Show(
+                "Tesseract OCR is unavailable in this build, so this scan will fall back to Windows OCR,\n" +
+                "which is markedly less accurate (missing substats, wrong values).\n\n" +
+                "Reason: " + (TesseractOcr.UnavailableReason ?? "unknown"),
+                "OCR engine degraded", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         var recognizer = new EchoRecognizer(_catalog);
         var result = await recognizer.RecognizeAsync(item.ImagePath);
 
@@ -1142,20 +1153,12 @@ public partial class MainReviewForm : Form
 
     private void NavigateNext()
     {
-        if (_currentIndex < _filteredItems.Count - 1)
-        {
-            _echoListView.Items[_currentIndex + 1].Selected = true;
-            _echoListView.EnsureVisible(_currentIndex + 1);
-        }
+        SelectListIndex(CurrentListIndex() + 1);
     }
 
     private void NavigatePrev()
     {
-        if (_currentIndex > 0)
-        {
-            _echoListView.Items[_currentIndex - 1].Selected = true;
-            _echoListView.EnsureVisible(_currentIndex - 1);
-        }
+        SelectListIndex(CurrentListIndex() - 1);
     }
 
     private void ClearEditor()
@@ -1182,27 +1185,170 @@ public partial class MainReviewForm : Form
 
     private void OnFormKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.Right || (e.Control && e.KeyCode == Keys.D))
+        // Ctrl+S saves regardless of where focus is.
+        if (e.Control && e.KeyCode == Keys.S)
+        {
+            _ = SaveVerifiedJsonAsync();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+
+        // A / D / arrows / Space drive the echo viewer, but only when the user
+        // is NOT typing into a field: otherwise those keys belong to the
+        // control (search term, combo selection, value edit).
+        if (IsTextEntryFocused()) return;
+
+        if (e.KeyCode == Keys.D || e.KeyCode == Keys.Right)
         {
             NavigateNext();
             e.Handled = true;
+            e.SuppressKeyPress = true;
         }
-        else if (e.KeyCode == Keys.Left || (e.Control && e.KeyCode == Keys.A))
+        else if (e.KeyCode == Keys.A || e.KeyCode == Keys.Left)
         {
             NavigatePrev();
             e.Handled = true;
+            e.SuppressKeyPress = true;
         }
         else if (e.KeyCode == Keys.Space)
         {
             MarkCurrentVerified();
             e.Handled = true;
-        }
-        else if (e.Control && e.KeyCode == Keys.S)
-        {
-            _ = SaveVerifiedJsonAsync();
-            e.Handled = true;
+            e.SuppressKeyPress = true;
         }
     }
+
+    /// <summary>
+    /// True when keyboard focus is inside a control that consumes typed
+    /// characters (text boxes, combos, spinners). Navigation shortcuts must
+    /// stay out of the way there so ordinary typing never mutates a review.
+    /// </summary>
+    private bool IsTextEntryFocused()
+        => FindFocusedControl(this) is TextBoxBase or ComboBox or UpDownBase;
+
+    private static Control? FindFocusedControl(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            if (child.Focused) return child;
+            var nested = FindFocusedControl(child);
+            if (nested != null) return nested;
+        }
+        return null;
+    }
+
+    /// <summary>Index of the row the ListView is actually showing as selected.</summary>
+    private int CurrentListIndex()
+        => _echoListView.SelectedIndices.Count > 0 ? _echoListView.SelectedIndices[0] : _currentIndex;
+
+    /// <summary>Select a list row defensively; an out-of-range index is a no-op.</summary>
+    private void SelectListIndex(int index)
+    {
+        if (index < 0 || index >= _echoListView.Items.Count) return;
+        _echoListView.BeginUpdate();
+        try
+        {
+            _echoListView.SelectedIndices.Clear();
+            _echoListView.Items[index].Selected = true;
+            _echoListView.EnsureVisible(index);
+        }
+        finally
+        {
+            _echoListView.EndUpdate();
+        }
+        _echoListView.Focus();
+    }
+
+    /// <summary>
+    /// Re-apply the newest <c>verified_echoes_*.json</c> in the session folder so a
+    /// manual edit + "Verify" survives reopening the folder. The studio already
+    /// wrote that file on save but never read it back, so edits silently vanished
+    /// on reload (the raw scan JSON was loaded instead).
+    /// </summary>
+    private void MergeVerifiedEdits(string? scanJsonFolder, string? sessionFolder)
+    {
+        try
+        {
+            string? folder = !string.IsNullOrWhiteSpace(sessionFolder) && Directory.Exists(sessionFolder)
+                ? sessionFolder
+                : (scanJsonFolder != null && Directory.Exists(scanJsonFolder) ? scanJsonFolder : null);
+            if (folder == null) return;
+
+            string? latest = Directory.GetFiles(folder, "verified_echoes_*.json")
+                .OrderByDescending(f => f)
+                .FirstOrDefault();
+            if (latest == null) return;
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(latest));
+            if (!doc.RootElement.TryGetProperty("Echoes", out var echoes) || echoes.ValueKind != JsonValueKind.Array)
+                return;
+
+            var byFile = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in echoes.EnumerateArray())
+            {
+                if (e.TryGetProperty("ImageFileName", out var n) && n.ValueKind == JsonValueKind.String)
+                    byFile[n.GetString() ?? ""] = e;
+            }
+
+            int merged = 0;
+            foreach (var item in _allItems)
+            {
+                if (!byFile.TryGetValue(item.ImageFileName, out var e)) continue;
+
+                item.EchoName = GetStr(e, "EchoName") ?? item.EchoName;
+                if (GetInt(e, "Cost") is { } c) item.Cost = c;
+                if (GetInt(e, "Rarity") is { } r) item.Rarity = r;
+                if (GetInt(e, "Level") is { } l) item.Level = l;
+                item.Sonata = GetStr(e, "Sonata") ?? item.Sonata;
+                if (GetStr(e, "MainStat", "Key") is { } mk) item.MainStatKey = mk;
+                if (GetFloat(e, "MainStat", "Value") is { } mv) item.MainStatValue = mv;
+                if (GetStr(e, "SecondMainStat", "Key") is { } sk) item.SecondMainStatKey = sk;
+                if (GetFloat(e, "SecondMainStat", "Value") is { } sv) item.SecondMainStatValue = sv;
+
+                if (e.TryGetProperty("Substats", out var subs) && subs.ValueKind == JsonValueKind.Array)
+                {
+                    item.Substats.Clear();
+                    foreach (var s in subs.EnumerateArray())
+                        item.Substats.Add(new EditableSubstat
+                        {
+                            IsActive = true,
+                            StatKey = GetStr(s, "Key") ?? "Unknown",
+                            Value = GetFloat(s, "Value") ?? 0f,
+                            SnappedValue = GetFloat(s, "SnappedValue"),
+                            RawValue = (GetFloat(s, "Value") ?? 0f).ToString(CultureInfo.InvariantCulture)
+                        });
+                    while (item.Substats.Count < 5)
+                        item.Substats.Add(new EditableSubstat { IsActive = false, StatKey = "Unknown" });
+                }
+
+                if (e.TryGetProperty("IsVerified", out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    item.IsVerified = v.GetBoolean();
+                if (e.TryGetProperty("IsEdited", out var ed) && ed.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    item.IsEdited = ed.GetBoolean();
+                merged++;
+            }
+
+            if (merged > 0)
+                _statusLabel.Text = $"Re-applied {merged} saved review edits from {Path.GetFileName(latest)}.";
+        }
+        catch { /* verified-merge is best-effort; must never block loading */ }
+    }
+
+    private static string? GetStr(JsonElement e, string name)
+        => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static string? GetStr(JsonElement e, string parent, string child)
+        => e.TryGetProperty(parent, out var p) && p.ValueKind == JsonValueKind.Object ? GetStr(p, child) : null;
+
+    private static int? GetInt(JsonElement e, string name)
+        => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out int i) ? i : null;
+
+    private static float? GetFloat(JsonElement e, string name)
+        => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetSingle(out float f) ? f : null;
+
+    private static float? GetFloat(JsonElement e, string parent, string child)
+        => e.TryGetProperty(parent, out var p) && p.ValueKind == JsonValueKind.Object ? GetFloat(p, child) : null;
 }
 
 // ── Custom Dark ToolStrip Renderer ──────────────────────────────────────────

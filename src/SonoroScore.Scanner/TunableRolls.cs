@@ -26,15 +26,35 @@ public static class TunableRolls
         (6.4f, 6.8f), (7.1f, 7.77f), (7.9f, 20.39f), (8.6f, 24.27f),
         (9.4f, 17.48f), (10.1f, 14.56f), (10.9f, 5.83f), (11.6f, 2.91f));
 
+    // DEF% has its OWN table (8.1 .. 14.7) and is NOT the common percent table.
+    // C-08 caught this against ../Tacet-Lab/src/game-data/tunable-rolls.ts: the
+    // original port put DefPercent on CommonPercent, so real DEF% rolls such as
+    // 8.1 and 10 were treated as non-rolls and tolerance-snapped to 7.9 / 10.1.
+    private static readonly Roll[] DefPercentRolls = Common(
+        (8.1f, 6.8f), (9f, 7.77f), (10f, 20.39f), (10.9f, 24.27f),
+        (11.8f, 17.48f), (12.8f, 14.56f), (13.8f, 5.83f), (14.7f, 2.91f));
+
     private static Roll[]? GetRolls(StatKey key)
     {
         if (Rolls.TryGetValue(key, out var r)) return r;
-        return key is StatKey.HpPercent or StatKey.AtkPercent or StatKey.DefPercent
-                   or StatKey.BasicDamage or StatKey.HeavyDamage or StatKey.SkillDamage
-                   or StatKey.LiberationDamage ? CommonPercent : null;
+        return key switch
+        {
+            StatKey.DefPercent => DefPercentRolls,
+            StatKey.HpPercent or StatKey.AtkPercent
+                or StatKey.BasicDamage or StatKey.HeavyDamage or StatKey.SkillDamage
+                or StatKey.LiberationDamage => CommonPercent,
+            _ => null,
+        };
     }
 
     private static readonly float[] FlatTolerances = [3f]; // hp/atk/def: max(3, value*0.08)
+
+    /// <summary>
+    /// True when this key is a legal SUBSTAT: it has a tunable roll table.
+    /// Data-driven from the tables above instead of a hand-typed list (C-07);
+    /// element-DMG / healing keys have no roll table and are therefore rejected.
+    /// </summary>
+    public static bool IsValidSubstatKey(StatKey key) => GetRolls(key) != null;
 
     /// <summary>Returns the exact matching roll, or null.</summary>
     public static float? Exact(StatKey key, float value)
@@ -58,33 +78,91 @@ public static class TunableRolls
     }
 
     /// <summary>
-    /// Try exact, then OCR 1↔7 digit swaps, then closest.
-    /// Returns (snapped value, confidence).
+    /// Discriminated roll resolution (C-05). Tolerance-based snapping is GONE: a
+    /// value is corrected only when the bounded confusion search (C-06) yields
+    /// EXACTLY ONE legal roll; otherwise it stays a proposal for review.
+    /// </summary>
+    public static RollResolution ResolveDetailed(StatKey key, float value)
+    {
+        var rolls = GetRolls(key);
+        if (rolls == null) return new RollResolution(RollState.NotARoll, null, []);
+
+        var exact = Exact(key, value);
+        if (exact.HasValue) return new RollResolution(RollState.Exact, exact.Value, [exact.Value]);
+
+        var candidates = ConfusionCandidates(key, value);
+        if (candidates.Count == 1) return new RollResolution(RollState.Corrected, candidates[0], candidates);
+        if (candidates.Count > 1) return new RollResolution(RollState.Ambiguous, null, candidates);
+        return new RollResolution(RollState.NotARoll, null, []);
+    }
+
+    /// <summary>Legal rolls for a key, ascending (empty when it has no roll table).</summary>
+    public static IReadOnlyList<float> RollsFor(StatKey key)
+        => GetRolls(key)?.Select(r => r.Value).OrderBy(v => v).ToArray() ?? [];
+
+    /// <summary>
+    /// Backward-compatible tuple wrapper over <see cref="ResolveDetailed"/>: only
+    /// Exact/Corrected carry a value; everything else is (null, 0.50).
     /// </summary>
     public static (float? Value, float Confidence) Resolve(StatKey key, float value)
     {
-        var exact = Exact(key, value);
-        if (exact.HasValue) return (exact.Value, 0.92f);
-
-        // Digit swap: 1↔7 (common OCR confusion)
-        string raw = value.ToString("0.#####", System.Globalization.CultureInfo.InvariantCulture);
-        for (int i = 0; i < raw.Length; i++)
+        var r = ResolveDetailed(key, value);
+        return r.State switch
         {
-            char c = raw[i];
-            if (c != '1' && c != '7') continue;
-            char[] swapped = raw.ToCharArray();
-            swapped[i] = c == '1' ? '7' : '1';
-            if (float.TryParse(new string(swapped), System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out float swappedVal))
+            RollState.Exact => (r.Value, 0.92f),
+            RollState.Corrected => (r.Value, 0.85f),
+            _ => (null, 0.50f),
+        };
+    }
+
+    /// <summary>Where a value landed against the roll table (C-05).</summary>
+    public enum RollState { Exact, Corrected, Ambiguous, NotARoll }
+
+    public sealed record RollResolution(RollState State, float? Value, IReadOnlyList<float> Candidates)
+    {
+        /// <summary>Only an unambiguous result may be exported (E-02).</summary>
+        public bool IsUsable => State is RollState.Exact or RollState.Corrected;
+    }
+
+    /// <summary>
+    /// Bounded OCR-confusion search (C-06): at most one substitution drawn from the
+    /// (data) confusion table, plus a decimal shift for percent keys, collected as
+    /// the set of DISTINCT legal rolls it can reach.
+    /// </summary>
+    private static List<float> ConfusionCandidates(StatKey key, float value)
+    {
+        var found = new List<float>();
+        if (!float.IsFinite(value)) return found;
+
+        void TryAdd(float v)
+        {
+            var exact = Exact(key, v);
+            if (exact.HasValue && !found.Contains(exact.Value)) found.Add(exact.Value);
+        }
+
+        string raw = value.ToString("0.#####", System.Globalization.CultureInfo.InvariantCulture);
+
+        foreach (var (fromCh, toCh) in OcrConfusions.Substitutions)
+        {
+            for (int i = 0; i < raw.Length; i++)
             {
-                var swapExact = Exact(key, swappedVal);
-                if (swapExact.HasValue) return (swapExact.Value, 0.85f);
+                if (raw[i] != fromCh) continue;
+                char[] swapped = raw.ToCharArray();
+                swapped[i] = toCh;
+                if (float.TryParse(new string(swapped), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float v))
+                    TryAdd(v);
             }
         }
 
-        var closest = Closest(key, value);
-        if (closest.HasValue) return (closest.Value, 0.78f);
+        // A missing/extra decimal point only makes sense for percent-typed stats.
+        if (OcrConfusions.DecimalShift && StatParser.IsPercentKey(key))
+        {
+            TryAdd(value / 10f);
+            TryAdd(value * 10f);
+        }
 
-        return (null, 0.50f);
+        found.Sort();
+        return found;
     }
 }

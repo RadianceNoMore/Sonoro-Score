@@ -1,0 +1,12 @@
+{
+  "note": "Bounded OCR digit-confusion pairs for substat roll correction (TODO C-06). A substitution is accepted ONLY when it yields exactly one legal roll for that key. C-06 requires each entry to be justified by >= 2 observed errors in accuracy_report.json; 'observations' tracks that count from real runs and starts at 0 because the corpus has not yet produced roll-level confusion data.",
+  "maxSubstitutions": 1,
+  "decimalShift": true,
+  "digitPairs": [
+    { "from": "1", "to": "7", "observations": 0 },
+    { "from": "0", "to": "8", "observations": 0 },
+    { "from": "3", "to": "8", "observations": 0 },
+    { "from": "5", "to": "6", "observations": 0 },
+    { "from": "6", "to": "8", "observations": 0 }
+  ]
+}

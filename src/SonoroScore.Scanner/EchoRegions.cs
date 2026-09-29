@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Drawing.Imaging;
 using System.Text.Json;
 
@@ -31,7 +31,11 @@ public static class EchoRegions
     // original probe estimates; see regions.override.json history.
     private static readonly Dictionary<string, RectangleF> _defaults = new()
     {
-        ["EchoName"]      = new(0f,        0.02f,   0.770f,  0.0395f),
+        // EchoName: owner-calibrated 2026-09-29 to cover TWO-LINE wrapped names
+        // ("Phantom: Twin Nova - Collapsar" / "Blade"). The strip ends at the same
+        // bottom edge as before and only extends upward, so single-line names are
+        // unaffected. Identical to the owner regions.override.json (now redundant).
+        ["EchoName"]      = new(0f,        0.0055f, 0.770f,  0.054f),
         ["Level"]         = new(0.776f,    0.018f,  0.119f,  0.037f),
         ["Cost"]          = new(0.0215f,   0.0715f, 0.2505f, 0.026f),
         ["MainStatStrip"] = new(0.1065f,   0.1225f, 0.8735f, 0.039f),
@@ -243,6 +247,24 @@ public static class EchoRegions
         var crop = new Bitmap(pix.Width, pix.Height, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(crop);
         g.DrawImage(panel, new Rectangle(0, 0, pix.Width, pix.Height), pix, GraphicsUnit.Pixel);
+        return crop;
+    }
+
+    /// <summary>
+    /// Crop a panel-relative region with a pixel padding (C-03 per-slot retry),
+    /// clamped to the panel. Returns a bitmap the caller owns.
+    /// </summary>
+    public static Bitmap CropRegionPadded(Bitmap panel, RectangleF region, int padPx)
+    {
+        var pix = ToPixels(region, panel.Width, panel.Height);
+        var padded = Rectangle.Intersect(
+            new Rectangle(pix.X - padPx, pix.Y - padPx, pix.Width + 2 * padPx, pix.Height + 2 * padPx),
+            new Rectangle(0, 0, panel.Width, panel.Height));
+        if (padded.Width < 1 || padded.Height < 1) padded = new Rectangle(0, 0, 1, 1);
+
+        var crop = new Bitmap(padded.Width, padded.Height, PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(crop);
+        g.DrawImage(panel, new Rectangle(0, 0, padded.Width, padded.Height), padded, GraphicsUnit.Pixel);
         return crop;
     }
 

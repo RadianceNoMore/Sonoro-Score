@@ -34,6 +34,13 @@ public static class SonataSignatureMatcher
 
     public const string SignatureFileName = "sonata_signatures.json";
 
+    /// <summary>
+    /// F-40: templates extracted from OUR OWN verified captures live here and take
+    /// precedence when present, because the shipped reference icons are cropped and
+    /// rendered differently and land every set inside a narrow, coin-flip score band.
+    /// </summary>
+    public const string LocalSignatureFileName = "sonata_signatures_local.json";
+
     private sealed record Template(string Name, double[] Signature);
 
     private static readonly double[] Scales = [0.45, 0.60, 0.75, 0.90, 1.00];
@@ -73,17 +80,68 @@ public static class SonataSignatureMatcher
         }
     }
 
+    /// <summary>The file a <see cref="CheckVersion"/>-style report should name as primary.</summary>
     private static string SignaturePath
-        => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SignatureFileName);
+    {
+        get
+        {
+            string local = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, LocalSignatureFileName);
+            return File.Exists(local) ? local : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SignatureFileName);
+        }
+    }
+
+    /// <summary>F-40: the raw captured samples for one icon crop (scale-major, 75 of them).</summary>
+    public static List<double[]> CapturedSignatures(Bitmap iconCrop)
+    {
+        EnsureLoaded();
+        return iconCrop.Width < 2 || iconCrop.Height < 2 ? [] : SignaturesInBox(iconCrop);
+    }
+
+    /// <summary>
+    /// F-40: write templates in the SAME wire format as the shipped file (values are
+    /// the [-2,2] signature scaled by 32, because the loader divides by 32).
+    /// </summary>
+    public static void SaveTemplates(string path, IEnumerable<(string Name, double[] Signature)> templates, string version)
+    {
+        var payload = new
+        {
+            version,
+            scannerSignatureVersion = version,
+            signatures = templates
+                .OrderBy(t => t.Name, StringComparer.Ordinal)
+                .Select(t => new
+                {
+                    name = t.Name,
+                    signature = t.Signature
+                        .Select(v => (int)Math.Round(Math.Clamp(v, -2.0, 2.0) * 32.0))
+                        .ToArray(),
+                })
+                .ToArray(),
+        };
+        File.WriteAllText(path, JsonSerializer.Serialize(payload));
+    }
 
     private static void EnsureLoaded()
     {
         lock (_lock)
         {
             if (_loaded) return;
-            var (templates, version) = LoadFile(SignaturePath);
-            _cachedTemplates = templates;
-            _cachedVersion = version;
+
+            // F-40/F-41: the local file SUPPLEMENTS the shipped reference set rather than
+            // replacing it - a locally extracted template wins for its set, and every set
+            // we have no local samples for keeps the shipped template. (Replacing the whole
+            // set would silently delete coverage for uncaptured sets.)
+            var shipped = LoadFile(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SignatureFileName));
+            var local = LoadFile(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, LocalSignatureFileName));
+
+            var merged = new Dictionary<string, Template>(StringComparer.OrdinalIgnoreCase);
+            foreach (var tpl in shipped.Templates) merged[tpl.Name] = tpl;
+            foreach (var tpl in local.Templates) merged[tpl.Name] = tpl;
+
+            _cachedTemplates = merged.Values.ToArray();
+            _cachedVersion = local.Templates.Length > 0
+                ? $"{local.Version ?? "local"}+{shipped.Version ?? "shipped"} ({local.Templates.Length} local / {shipped.Templates.Length} shipped)"
+                : shipped.Version;
             _loaded = true;
         }
     }
@@ -114,6 +172,13 @@ public static class SonataSignatureMatcher
             log?.Invoke("[SIG] sonata_signatures.json has no version field (legacy array format); " +
                         $"expected '{ExpectedSignatureVersion}'. Consider re-exporting with a version.");
             return false;
+        }
+
+        if (ver.StartsWith("local", StringComparison.OrdinalIgnoreCase))
+        {
+            log?.Invoke($"[SIG] Locally extracted templates in use: '{ver}' ({TemplateCount} sets) - " +
+                        "preferred over the shipped reference set (F-40).");
+            return true;
         }
 
         bool ok = ver == ExpectedSignatureVersion &&
@@ -246,18 +311,58 @@ public static class SonataSignatureMatcher
     /// Returns the best set name and a confidence in [0,1]; Name is null when
     /// the signature file is missing or the icon crop is unusable.
     /// </summary>
+    /// <summary>
+    /// F-33 diagnostic: score EVERY template for this icon crop, best first. Lets a
+    /// real capture be inspected with the real metric instead of re-implementing it.
+    /// </summary>
+    public static List<(string Name, double Score)> RankAll(Bitmap iconCrop)
+    {
+        var ranked = new List<(string Name, double Score)>();
+        EnsureLoaded();
+        var templates = _cachedTemplates ?? [];
+        if (templates.Length == 0 || iconCrop.Width < 2 || iconCrop.Height < 2) return ranked;
+
+        var captured = SignaturesInBox(iconCrop);
+        if (captured.Count == 0) return ranked;
+
+        foreach (var tpl in templates)
+        {
+            double score = double.NegativeInfinity;
+            foreach (var sig in captured)
+            {
+                double s = 1.0 - L1(tpl.Signature, sig) / (sig.Length * 4.0);
+                if (s > score) score = s;
+            }
+            ranked.Add((tpl.Name, score));
+        }
+
+        ranked.Sort((a, b) => b.Score.CompareTo(a.Score));
+        return ranked;
+    }
+
     public static (string? Name, double Confidence) Match(Bitmap iconCrop)
+    {
+        var m = MatchDetailed(iconCrop);
+        return (m.Name, m.Confidence);
+    }
+
+    /// <summary>
+    /// F-33: the match plus the runner-up margin. The whole template set scores inside a
+    /// narrow band, so the MARGIN - not the absolute score - carries the discriminating
+    /// information; a thin margin means the winner is a coin flip.
+    /// </summary>
+    public static (string? Name, double Confidence, double Margin, string? RunnerUpName) MatchDetailed(Bitmap iconCrop)
     {
         EnsureLoaded();
         var templates = _cachedTemplates ?? [];
         if (templates.Length == 0 || iconCrop.Width < 2 || iconCrop.Height < 2)
-            return (null, 0.0);
+            return (null, 0.0, 0.0, null);
 
         var captured = SignaturesInBox(iconCrop);
         if (captured.Count == 0)
-            return (null, 0.0);
+            return (null, 0.0, 0.0, null);
 
-        string? bestName = null;
+        string? bestName = null, runnerUpName = null;
         double bestScore = double.NegativeInfinity;
         double runnerUp = double.NegativeInfinity;
 
@@ -273,20 +378,23 @@ public static class SonataSignatureMatcher
             if (score > bestScore)
             {
                 runnerUp = bestScore;
+                runnerUpName = bestName;
                 bestScore = score;
                 bestName = tpl.Name;
             }
             else if (score > runnerUp)
             {
                 runnerUp = score;
+                runnerUpName = tpl.Name;
             }
         }
 
         double minimumScore = templates.Length == 1 ? 0.42 : 0.48;
-        if (bestScore < minimumScore) return (null, 0.0);
+        double margin = double.IsNegativeInfinity(runnerUp) ? 1.0 : bestScore - runnerUp;
+        if (bestScore < minimumScore) return (null, 0.0, margin, runnerUpName);
 
         double confidence = Math.Min(0.96, 0.55 + bestScore * 0.4);
-        return (bestName, confidence);
+        return (bestName, confidence, margin, runnerUpName);
     }
 
     private static double L1(double[] a, double[] b)

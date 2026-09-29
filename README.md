@@ -1,4 +1,4 @@
-# Sonoro-Score 🎵
+﻿# Sonoro-Score 🎵
 
 > **C# (.NET 8) automation and Echo scanner suite for Wuthering Waves.**
 > Pixel-driven navigation, hybrid-OCR echo recognition, review studio, and
@@ -78,11 +78,16 @@ Window and dialog layouts (sizes + splitter positions) are remembered across ses
 * [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) (only to compile from source)
 
 ### Tesseract OCR data setup
-1. Download `eng.traineddata` ([tessdata_best](https://github.com/tesseract-ocr/tessdata_best) or `_fast`).
-2. Place it in a `tessdata/` folder next to the executable, e.g. `publish/SonoroScore/tessdata/eng.traineddata`.
-3. Native `leptonica`/`tesseract` DLLs ship via the `Tesseract` NuGet package on build.
+The OCR model is **pinned in the repo** at `assets/tessdata/eng.traineddata` and is copied
+automatically into `tessdata/` for every project (tests, CLI, both apps) and into `publish/`
+on release. No manual download step - dev/test and the shipped binaries therefore run the
+**same** model.
 
-Without `tessdata`, everything still runs on Windows OCR (unless disabled via `--no-winocr-fallback` / `SONORO_NO_WINOCR=1`).
+Native `leptonica`/`tesseract` DLLs ship via the `Tesseract` NuGet package on build.
+
+If `tessdata` is ever missing, the scanner degrades to Windows OCR (much less accurate).
+It now says so loudly: the AS log prints the reason, and the SS status bar warns on startup
+(disable the fallback entirely via `--no-winocr-fallback` / `SONORO_NO_WINOCR=1`).
 
 ### Running the Apps
 ```powershell
@@ -146,7 +151,7 @@ A. Run OCR Echo Scanner on aleph_images test suite -> JSON (+ Tacet/GOOD exports
 ```
 Sonoro-Score/
 ├── SonoroScore.sln
-├── Directory.Build.props          # shared version (v1.6.0)
+├── Directory.Build.props          # shared version (v1.7.0)
 ├── NOTICES.md                     # third-party licenses (Tacet-Lab: GPL-3.0)
 ├── the project notes                        # accuracy plan + A/B history
 ├── src/

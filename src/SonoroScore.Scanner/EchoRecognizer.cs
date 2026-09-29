@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Globalization;
 using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
@@ -47,6 +47,18 @@ public class EchoRecognizer
         }
     }
 
+    /// <summary>
+    /// Recognize an image that is ALREADY a cropped echo panel (fixture corpus
+    /// entry point). Mirrors <see cref="RecognizePanelAsync"/> ownership rules.
+    /// </summary>
+    public async Task<EchoScanResult> RecognizePanelFileAsync(string panelPath)
+    {
+        Bitmap panel;
+        try { panel = new Bitmap(panelPath); }
+        catch (Exception ex) { return Error(panelPath, $"Cannot open image: {ex.Message}"); }
+        return await RecognizePanelAsync(panel, Path.GetFileName(panelPath));
+    }
+
     private async Task<EchoScanResult> RecognizeBitmapAsync(string imagePath, Bitmap full)
     {
         // Our captured images ARE already the full WuWa window frame.
@@ -76,8 +88,12 @@ public class EchoRecognizer
         // ── 0b. OCR engine mode (Priority 3/4 QA gate) ──────────────────────
         string ocrMode = TesseractOcr.IsAvailable
             ? (ScannerConfig.UseWindowsOcrFallback ? "Tesseract+WinOcr-fallback" : "Tesseract-only")
-            : (ScannerConfig.UseWindowsOcrFallback ? "WinOcr-only (no tessdata)" : "NO-OCR-ENGINE");
+            : (ScannerConfig.UseWindowsOcrFallback
+                ? $"WinOcr-only (Tesseract unavailable: {TesseractOcr.UnavailableReason ?? "unknown reason"})"
+                : "NO-OCR-ENGINE");
         _log?.Invoke($"  [OCR] Engine mode: {ocrMode}");
+        if (!TesseractOcr.IsAvailable && ScannerConfig.UseWindowsOcrFallback)
+            warnings.Add($"Tesseract unavailable ({TesseractOcr.UnavailableReason ?? "unknown"}) - degraded to Windows OCR; readings may be wrong.");
         if (ocrMode == "NO-OCR-ENGINE")
             warnings.Add("No OCR engine available (Tesseract missing and Windows fallback disabled).");
 
@@ -87,96 +103,345 @@ public class EchoRecognizer
             // Strategy/PSM/whitelist per region shape (Tacet ocr-pool mapping):
             // name→Name/SINGLE_BLOCK, level→number/SINGLE_LINE, strips→Label/
             // SINGLE_LINE, zones→Text, substats→Substat/SINGLE_BLOCK.
-            string nameOcr = await OcrNameAsync(panel);
-            string levelOcr = await OcrRegionAsync(panel, EchoRegions.Level, FieldStrategy.Text,
+            var nameRead = await OcrNameAsync(panel);
+            string nameOcr = nameRead.Text;
+            var levelRead = await OcrRegionAsync(panel, EchoRegions.Level, FieldStrategy.Text,
                 PageSegMode.SingleLine, TesseractOcr.NumberWhitelist,
                 s => ParseLevel(s) != null);
-            string costOcr = await OcrRegionAsync(panel, EchoRegions.Cost, FieldStrategy.Text,
+            var costRead = await OcrRegionAsync(panel, EchoRegions.Cost, FieldStrategy.Text,
                 PageSegMode.SingleLine, TesseractOcr.TextWhitelist,
                 s => ParseCost(s) != null);
-            string mainStatLine = await OcrRegionAsync(panel, EchoRegions.MainStatStrip, FieldStrategy.Text,
+            var mainRead = await OcrRegionAsync(panel, EchoRegions.MainStatStrip, FieldStrategy.Text,
                 PageSegMode.SingleLine, TesseractOcr.TextWhitelist,
                 s => StatParser.ParseLine(StatParser.NormalizeOcrArtifacts(s)) != null);
-            string secondMainStatLine = await OcrRegionAsync(panel, EchoRegions.SecondMainStat, FieldStrategy.Text,
+            var secondMainRead = await OcrRegionAsync(panel, EchoRegions.SecondMainStat, FieldStrategy.Text,
                 PageSegMode.SingleLine, TesseractOcr.TextWhitelist,
                 s => StatParser.ParseLine(StatParser.NormalizeOcrArtifacts(s)) != null);
             // Zone B: Sonata Effect region (starts below skill text)
-            string sonataZoneOcr = await OcrRegionAsync(panel, EchoRegions.SonataZone, FieldStrategy.Text,
+            var sonataZoneRead = await OcrRegionAsync(panel, EchoRegions.SonataZone, FieldStrategy.Text,
                 PageSegMode.SingleBlock, TesseractOcr.TextWhitelist);
             // Zone C: Owner strip
-            string ownerZoneOcr = await OcrRegionAsync(panel, EchoRegions.OwnerZone, FieldStrategy.Text,
+            var ownerRead = await OcrRegionAsync(panel, EchoRegions.OwnerZone, FieldStrategy.Text,
                 PageSegMode.SingleLine, TesseractOcr.TextWhitelist);
+
+            // D-06: per-field provenance is recorded as DATA, so nothing downstream
+            // has to parse the human-readable warnings.
+            var diagnostics = new List<EchoScanResult.FieldDiagnostics>();
+            void Note(string field, RegionRead r, string? raw, string? note = null)
+                => diagnostics.Add(new EchoScanResult.FieldDiagnostics(
+                    field, r.Engine, r.Psm, r.Preprocess, r.Attempt, raw ?? r.Text, r.Confidence, note));
+
+            Note("identity", nameRead, nameRead.Text);
+            Note("level", levelRead, levelRead.Text);
+            Note("cost", costRead, costRead.Text);
+            Note("mainStat", mainRead, mainRead.Text);
+            Note("secondMainStat", secondMainRead, secondMainRead.Text);
+            Note("sonata", sonataZoneRead, sonataZoneRead.Text);
+            Note("owner", ownerRead, ownerRead.Text);
+
+            // D-01: the engine's own confidence travels with every read; 0 means
+            // "the engine could not tell us" (Windows OCR), never "perfect".
+            string levelOcr = levelRead.Text;
+            string costOcr = costRead.Text;
+            string mainStatLine = mainRead.Text;
+            string secondMainStatLine = secondMainRead.Text;
+            string sonataZoneOcr = sonataZoneRead.Text;
+            string ownerZoneOcr = ownerRead.Text;
 
             _log?.Invoke($"    Name OCR: \"{nameOcr.Replace('\n',' ')}\"");
 
             // ── 3. Rarity (pixel, no OCR) ───────────────────────────────────
             // Raw color crop: the hue classifier needs color, never binarized text.
-            int rarity;
-            using (var rarityBmp = EchoRegions.CropRegion(panel, EchoRegions.RarityBand))
-                rarity = RarityClassifier.Classify(rarityBmp);
+            // Rarity is NOT shown on the character-select echo panel. It is a
+            // legacy field inherited from the Genshin-style export formats, and
+            // every echo here is 5-star, so it is a documented CONSTANT - never a
+            // read value, and never usable as evidence (see B-03).
+            const int rarity = 5;
+            const string rarityProvenance = "constant 5* (panel shows no rarity; legacy export field)";
 
-            // ── 4. Echo name (fuzzy catalog match) ──────────────────────────
-            string cleanedName = CleanOcrText(nameOcr);
-            var (nameEntry, nameScore) = FuzzyMatcher.ClosestMatch(
-                cleanedName, _catalog, e => e.Name, threshold: ScannerConfig.EchoNameMinConfidence);
-
-            // Try 2-line windows if score is low
-            if (nameScore < 0.75f)
+            // 3b. Independent evidence BEFORE name matching (B-03, closes F-06):
+            // the sonata icon, the OCR'd cost and the rarity each restrict which
+            // catalog entries the name could possibly be.
+            string? sonataIconName = null;
+            float sonataIconConf = 0f;
+            using (var iconCrop = EchoRegions.CropRegion(panel, EchoRegions.SonataIcon))
             {
-                var lines = cleanedName.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                for (int i = 0; i < lines.Length - 1 && nameScore < 0.90f; i++)
+                // Raw color crop: the signature matcher needs color, never binarized text.
+                var (sigName, sigConf, sigMargin, sigRunnerUp) = SonataSignatureMatcher.MatchDetailed(iconCrop);
+                if (sigName != null && sigConf > ScannerConfig.SonataIconMinConfidence)
                 {
-                    string window = lines[i] + " " + lines[i + 1];
-                    var (e2, s2) = FuzzyMatcher.ClosestMatch(window, _catalog, e => e.Name, ScannerConfig.EchoNameMinConfidence);
-                    if (s2 > nameScore) { nameEntry = e2; nameScore = s2; }
+                    sonataIconName = sigName;
+                    sonataIconConf = (float)sigConf;
+                }
+
+                // F-33: all 34 sets score within ~0.05 of each other, so a thin margin
+                // means a coin flip - say so rather than reporting it as a reading.
+                if (sigName != null && sigMargin < ScannerConfig.SonataIconMinMargin)
+                {
+                    var top = SonataSignatureMatcher.RankAll(iconCrop);
+                    var names = new List<string>();
+                    for (int k = 0; k < top.Count && k < 3; k++) names.Add(top[k].Name);
+                    warnings.Add($"SonataIconAmbiguous: '{sigName}' beat '{sigRunnerUp}' by only {sigMargin:F4} " +
+                                 $"(margin floor {ScannerConfig.SonataIconMinMargin:F2}); top candidates: {string.Join(", ", names)}.");
                 }
             }
 
-            // SingleLine PSM can clip wrapped (2-line) names: re-OCR with Auto
-            // segmentation as a second chance when the score is still low.
-            if (nameScore < 0.75f && TesseractOcr.IsAvailable)
+            int? costOcrParsed = ParseCost(costOcr);
+
+            // F-45: the panel TEXT names the set. When it parses cleanly it beats the icon
+            // for constraining the name (the icon cannot separate some families), so the
+            // contradiction flag below stops firing for real, readable panels.
+            var (sonataTextName, sonataTextConf) = SonataFromZoneText(
+                sonataZoneOcr, Math.Max(ScannerConfig.SonataTextMinConfidence, 0.70f));
+
+            var flags = new List<string>();
+            EchoCatalogEntry[] nameCandidates = _catalog;
+            bool nameConstrained = false;
+
+            string? constraintSonata = sonataTextName ?? sonataIconName;
+            if (constraintSonata != null)
+            {
+                var con = nameCandidates
+                    .Where(c => c.Sonatas.Contains(constraintSonata, StringComparer.OrdinalIgnoreCase)).ToArray();
+
+                // A text set with no catalog entry at all would strand the constraint;
+                // fall back to the icon set (and keep the reason on record).
+                if (con.Length == 0 && sonataTextName != null && sonataIconName != null &&
+                    !string.Equals(sonataTextName, sonataIconName, StringComparison.OrdinalIgnoreCase))
+                {
+                    warnings.Add($"SonataTextConstraintEmpty: text set '{sonataTextName}' has no catalog entry; " +
+                                 $"using the icon set '{sonataIconName}' for the name constraint.");
+                    constraintSonata = sonataIconName;
+                    con = nameCandidates
+                        .Where(c => c.Sonatas.Contains(constraintSonata, StringComparer.OrdinalIgnoreCase)).ToArray();
+                }
+
+                nameCandidates = con;
+                nameConstrained = true;
+            }
+            if (costOcrParsed.HasValue)
+            {
+                nameCandidates = nameCandidates.Where(c => c.Cost == costOcrParsed.Value).ToArray();
+                nameConstrained = true;
+            }
+            // Rarity is deliberately NOT used to filter candidates: the panel does
+            // not show it, the value is a constant, and a bogus low value would
+            // exclude every catalog entry. Its catalog field `Rarities` stays unused.
+
+            // Fallback is strict: widen AND flag, never widen silently (D-06).
+            if (nameConstrained && nameCandidates.Length == 0)
+            {
+                nameCandidates = _catalog;
+                flags.Add("NameContradictsEvidence");
+                warnings.Add("NameContradictsEvidence: sonata icon / cost / rarity filtered the catalog " +
+                             "to zero entries; fell back to the full catalog and flagged it.");
+            }
+
+            _log?.Invoke($"    Name candidates: {nameCandidates.Length}/{_catalog.Length}" +
+                         (nameConstrained ? " (constrained)" : " (unconstrained)"));
+
+            // ── 4. Echo name (fuzzy catalog match) ──────────────────────────
+            // B-03: the whole name cascade runs against a candidate POOL so it can be
+            // retried unconstrained when the independent evidence contradicts it.
+            async Task<(EchoCatalogEntry? Entry, float Score, string? AutoOcr, string Stage, bool Phantom)> MatchNameAsync(EchoCatalogEntry[] pool)
+            {
+                string cleaned = CleanOcrText(nameOcr);
+
+                // F-36: "Phantom:" variants exist on the panel but NOT in the catalog; the
+                // prefix is stripped for MATCHING only and kept in the reported name.
+                bool phantomVariant = Regex.IsMatch(cleaned, @"^\s*phantom\b[:\s]", RegexOptions.IgnoreCase);
+                if (phantomVariant)
+                    cleaned = Regex.Replace(cleaned, @"^\s*phantom\b[:\s]*", "", RegexOptions.IgnoreCase).Trim();
+
+                string? autoOcr = null;
+                string stage = "single";   // B-05: which fallback produced the winner
+                var (entry, score) = FuzzyMatcher.ClosestMatch(
+                    cleaned, pool, e => e.Name, threshold: ScannerConfig.EchoNameMinConfidence);
+
+                // Try 2-line windows if score is low
+                if (score < ScannerConfig.NameAcceptScore)
+                {
+                    var lines = cleaned.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    for (int i = 0; i < lines.Length - 1 && score < ScannerConfig.NameRescueScore; i++)
+                    {
+                        string window = lines[i] + " " + lines[i + 1];
+                        var (e2, s2) = FuzzyMatcher.ClosestMatch(window, pool, e => e.Name,
+                            ScannerConfig.EchoNameMinConfidence);
+                        if (s2 > score) { entry = e2; score = s2; stage = "window2"; }
+                    }
+                }
+
+                // SingleLine PSM can clip wrapped (2-line) names: re-OCR with Auto
+                // segmentation as a second chance when the score is still low.
+                if (score < ScannerConfig.NameAcceptScore && TesseractOcr.IsAvailable)
+                {
+                    try
+                    {
+                        string candidateOcr = (await OcrRegionAsync(panel, EchoRegions.EchoName,
+                            FieldStrategy.Name, PageSegMode.Auto, TesseractOcr.TextWhitelist)).Text;
+                        string cleanedAuto = CleanOcrText(candidateOcr);
+                        if (Regex.IsMatch(cleanedAuto, @"^\s*phantom\b[:\s]", RegexOptions.IgnoreCase))
+                            cleanedAuto = Regex.Replace(cleanedAuto, @"^\s*phantom\b[:\s]*", "", RegexOptions.IgnoreCase).Trim();
+                        if (!string.IsNullOrWhiteSpace(cleanedAuto))
+                        {
+                            var (e3, s3) = FuzzyMatcher.ClosestMatch(
+                                cleanedAuto, pool, e => e.Name, threshold: ScannerConfig.EchoNameMinConfidence);
+                            // Guard: below-threshold matches return a null entry -
+                            // never let them overwrite (or lock out) a real candidate.
+                            if (e3 != null && s3 > score)
+                            {
+                                entry = e3; score = s3; cleaned = cleanedAuto; autoOcr = candidateOcr;
+                                stage = "auto";
+                            }
+                            // Per-line rescue always runs while the score is still low:
+                            // a wrapped name often matches on one clean line even when
+                            // the whole text doesn't.
+                            if (score < ScannerConfig.NameRescueScore)
+                            {
+                                foreach (var line in cleanedAuto.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                                {
+                                    var (e4, s4) = FuzzyMatcher.ClosestMatch(line, pool, e => e.Name, ScannerConfig.EchoNameMinConfidence);
+                                    if (e4 != null && s4 > score) { entry = e4; score = s4; stage = "per-line"; }
+                                }
+                            }
+                        }
+                    }
+                    catch { /* keep SingleLine result */ }
+                }
+
+                return (entry, score, autoOcr, stage, phantomVariant);
+            }
+
+            bool namePhantom = false;
+            var (nameEntry, nameScore, nameAutoOcr, nameStage, namePhantomFirst) = await MatchNameAsync(nameCandidates);
+            namePhantom = namePhantomFirst;
+            if (nameAutoOcr != null) nameOcr = nameAutoOcr;   // keep evidence with the winner
+
+            // Strict widening: a constrained pool that yields NO name means the
+            // evidence contradicts the catalog. Retry the FULL catalog and flag it -
+            // never return nothing silently (B-03 / D-06).
+            if (nameEntry == null && nameConstrained)
+            {
+                flags.Add("NameContradictsEvidence");
+                warnings.Add("NameContradictsEvidence: no name matched inside the sonata/cost/rarity-" +
+                             "constrained set; retried the full catalog and flagged it.");
+                (nameEntry, nameScore, nameAutoOcr, nameStage, namePhantom) = await MatchNameAsync(_catalog);
+                nameStage += " (unconstrained retry)";
+                if (nameAutoOcr != null) nameOcr = nameAutoOcr;
+            }
+
+            // F-38 extension: the name strip suffers the same gradient clipping as the stat
+            // strips ("Nightmar . oses", or nothing at all). If no name matched, re-read the
+            // strip with the local-threshold pass before giving up.
+            if (nameEntry == null && TesseractOcr.IsAvailable)
             {
                 try
                 {
-                    string nameOcrAuto = await OcrRegionAsync(panel, EchoRegions.EchoName,
-                        FieldStrategy.Name, PageSegMode.Auto, TesseractOcr.TextWhitelist);
-                    string cleanedAuto = CleanOcrText(nameOcrAuto);
-                    if (!string.IsNullOrWhiteSpace(cleanedAuto))
+                    using var altName = EchoFieldPreprocessor.ProcessAdaptive(panel, EchoRegions.EchoName);
+                    var (altText, _) = await TesseractOcr.RecognizeWithConfidenceAsync(
+                        altName, ScannerConfig.NameRegionPsm, TesseractOcr.TextWhitelist);
+                    string cleanedAlt = CleanOcrText(altText);
+                    if (Regex.IsMatch(cleanedAlt, @"^\s*phantom\b[:\s]", RegexOptions.IgnoreCase))
                     {
-                        var (e3, s3) = FuzzyMatcher.ClosestMatch(
-                            cleanedAuto, _catalog, e => e.Name, threshold: ScannerConfig.EchoNameMinConfidence);
-                        // Guard: below-threshold matches return a null entry —
-                        // never let them overwrite (or lock out) a real candidate.
-                        if (e3 != null && s3 > nameScore)
+                        cleanedAlt = Regex.Replace(cleanedAlt, @"^\s*phantom\b[:\s]*", "", RegexOptions.IgnoreCase).Trim();
+                        namePhantom = true;
+                    }
+                    if (!string.IsNullOrWhiteSpace(cleanedAlt))
+                    {
+                        var pools = nameConstrained
+                            ? new[] { nameCandidates, _catalog }
+                            : new[] { _catalog };
+                        foreach (var pool in pools)
                         {
-                            nameEntry = e3; nameScore = s3; cleanedName = cleanedAuto;
-                            nameOcr = nameOcrAuto; // keep evidence consistent with the winner
-                        }
-                        // Per-line rescue always runs while the score is still low:
-                        // a wrapped name often matches on one clean line even when
-                        // the whole text doesn't.
-                        if (nameScore < 0.90f)
-                        {
-                            foreach (var line in cleanedAuto.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                            var (eAlt, sAlt) = FuzzyMatcher.ClosestMatch(
+                                cleanedAlt, pool, e => e.Name, ScannerConfig.EchoNameMinConfidence);
+                            if (eAlt != null)
                             {
-                                var (e4, s4) = FuzzyMatcher.ClosestMatch(line, _catalog, e => e.Name, ScannerConfig.EchoNameMinConfidence);
-                                if (e4 != null && s4 > nameScore) { nameEntry = e4; nameScore = s4; }
+                                warnings.Add($"NameAdaptiveRetry: the primary name read did not match; a " +
+                                             $"local-threshold re-read gave '{eAlt.Name}' ({sAlt:F2}).");
+                                nameEntry = eAlt;
+                                nameScore = sAlt;
+                                nameOcr = altText;
+                                nameStage += " (adaptive name retry)";
+                                // If the re-read matched inside the evidence-constrained pool, the
+                                // contradiction was an OCR failure, not a catalog conflict - clear it.
+                                if (nameConstrained && !ReferenceEquals(pool, _catalog) &&
+                                    flags.Contains("NameContradictsEvidence"))
+                                {
+                                    flags.Remove("NameContradictsEvidence");
+                                    warnings.Add("NameAdaptiveRetry: matched inside the evidence-constrained pool, " +
+                                                 "so the contradiction flag was cleared.");
+                                }
+                                break;
                             }
                         }
                     }
                 }
-                catch { /* keep SingleLine result */ }
+                catch (Exception ex)
+                {
+                    warnings.Add("NameAdaptiveRetry failed: " + ex.Message);
+                }
             }
 
+            if (nameEntry != null && namePhantom)
+                warnings.Add($"PhantomVariant: the panel shows a \"Phantom:\" variant; matched the base catalog " +
+                             $"entry '{nameEntry.Name}' and kept the prefix in the reported name.");
+
             if (nameEntry == null)
-                warnings.Add($"Echo name not matched (best score {nameScore:F2}): \"{cleanedName}\"");
+                warnings.Add($"Echo name not matched (best score {nameScore:F2}): \"{CleanOcrText(nameOcr).Replace('\n', ' ')}\"");
+
+            // B-05: which fallback won is provenance, not prose - record it as data.
+            int identityIdx = diagnostics.FindIndex(d => d.Field == "identity");
+            if (identityIdx >= 0)
+                diagnostics[identityIdx] = diagnostics[identityIdx] with
+                {
+                    Note = $"stage={nameStage}; candidates={(nameConstrained ? nameCandidates.Length : _catalog.Length)}",
+                };
 
             // ── 5. Level ────────────────────────────────────────────────────
             int? level = ParseLevel(levelOcr);
-            if (level == null) warnings.Add($"Level not parsed from: \"{levelOcr}\"");
+            if (level == null && TesseractOcr.IsAvailable)
+            {
+                // D-03: one 4x-scale retry before giving up on the level strip.
+                try
+                {
+                    using var levelTess = EchoFieldPreprocessor.Process(panel, EchoRegions.Level, FieldStrategy.Text);
+                    using var levelBig = new Bitmap(levelTess.Width * 4, levelTess.Height * 4,
+                        System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    using (var g = Graphics.FromImage(levelBig))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(levelTess, 0, 0, levelBig.Width, levelBig.Height);
+                    }
+                    string retry = await TesseractOcr.RecognizeAsync(
+                        levelBig, PageSegMode.SingleLine, TesseractOcr.NumberWhitelist);
+                    level = ParseLevel(retry);
+                    if (level != null)
+                        warnings.Add($"Level recovered by 4x retry: '{retry.Trim()}' (first read: '{levelOcr.Trim()}').");
+                }
+                catch { /* keep the null - the flag below records it */ }
+            }
+            if (level == null)
+            {
+                flags.Add("LevelUnparsed");
+                warnings.Add($"LevelUnparsed: no full-string number in \"{levelOcr}\".");
+            }
 
             // ── 6. Cost (from catalog or parse) ────────────────────────────
-            int? cost = nameEntry?.Cost ?? ParseCost(costOcr);
+            // B-04: the OCR'd cost is primary evidence; the catalog cost is only a
+            // second opinion. The old flat 0.95 came from a name match alone, so a
+            // wrong name produced a confidently wrong cost.
+            int? cost = costOcrParsed ?? nameEntry?.Cost;
+            float costConfidence = costOcrParsed.HasValue
+                ? (float)(costRead.Confidence ?? 0.5)
+                : (nameEntry != null ? 0.50f : 0f);
+            if (costOcrParsed.HasValue && nameEntry != null && nameEntry.Cost != costOcrParsed.Value)
+            {
+                flags.Add("CostNameMismatch");
+                warnings.Add($"CostNameMismatch: OCR cost {costOcrParsed.Value} vs name '{nameEntry.Name}' " +
+                             $"cost {nameEntry.Cost} - kept the OCR value and lowered name confidence.");
+                nameScore *= 0.8f;
+            }
 
             // ── 7. Main stat ────────────────────────────────────────────────
             var mainStat = StatParser.ParseLine(mainStatLine);
@@ -187,6 +452,26 @@ public class EchoRecognizer
                 {
                     mainStat = StatParser.ParseLine(line);
                     if (mainStat != null) break;
+                }
+            }
+
+            // F-38: the same gradient that defeats the substat block also clips these
+            // strips ("Ha oc Bonus", "ATK" with the value dropped). Retry the strip with
+            // the local-threshold pass before declaring the field unreadable.
+            if (mainStat == null && TesseractOcr.IsAvailable)
+            {
+                try
+                {
+                    using var altMain = EchoFieldPreprocessor.ProcessAdaptive(panel, EchoRegions.MainStatStrip);
+                    string altText = await TesseractOcr.RecognizeAsync(altMain, PageSegMode.SingleLine, TesseractOcr.TextWhitelist);
+                    mainStat = StatParser.ParseLine(StatParser.NormalizeOcrArtifacts(altText));
+                    if (mainStat != null)
+                        warnings.Add($"MainStatAdaptiveRetry: primary read \"{mainStatLine.Replace('\n', ' ')}\" did not " +
+                                     $"parse; a local-threshold re-read gave '{mainStat.Key} {mainStat.Value}'.");
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add("MainStatAdaptiveRetry failed: " + ex.Message);
                 }
             }
 
@@ -208,6 +493,81 @@ public class EchoRecognizer
                     warnings.Add($"Second main stat not parsed from: \"{secondMainStatLine.Replace('\n', ' ')}\"");
             }
 
+            // F-38: same local-threshold retry for the secondary strip.
+            if (secondMainStat == null && TesseractOcr.IsAvailable)
+            {
+                try
+                {
+                    using var altSecond = EchoFieldPreprocessor.ProcessAdaptive(panel, EchoRegions.SecondMainStat);
+                    string altText = await TesseractOcr.RecognizeAsync(altSecond, PageSegMode.SingleLine, TesseractOcr.TextWhitelist);
+                    secondMainStat = StatParser.ParseLine(StatParser.NormalizeOcrArtifacts(altText));
+                    if (secondMainStat != null)
+                        warnings.Add($"SecondMainStatAdaptiveRetry: primary read \"{secondMainStatLine.Replace('\n', ' ')}\"" +
+                                     $" did not parse; a local-threshold re-read gave '{secondMainStat.Key} {secondMainStat.Value}'.");
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add("SecondMainStatAdaptiveRetry failed: " + ex.Message);
+                }
+            }
+
+            // D-04: cross-field consistency. For a fixed (cost, key) the main and
+            // secondary values are deterministic in level, so a mismatch means one of
+            // the three is wrong. Rules ported from Tacet-Lab's echo-main-stats.ts.
+            if (cost.HasValue && level.HasValue)
+            {
+                int mainCost = cost.Value;
+
+                if (mainStat != null)
+                {
+                    if (!EchoMainStats.IsMainStatAllowed(mainCost, mainStat.Key))
+                    {
+                        flags.Add("MainStatInvalidForCost");
+                        warnings.Add($"MainStatInvalidForCost: a cost {mainCost} echo cannot have " +
+                                     $"{mainStat.Key} as its primary main stat.");
+                    }
+                    else
+                    {
+                        var expectedMain = EchoMainStats.PrimaryValue(mainCost, rarity, level.Value, mainStat.Key);
+                        if (expectedMain.HasValue && Math.Abs(mainStat.Value - expectedMain.Value) > 0.051f)
+                        {
+                            int? consistent = EchoMainStats.FindConsistentLevel(mainCost, rarity, mainStat.Key, mainStat.Value);
+                            if (consistent.HasValue && consistent.Value != level.Value)
+                            {
+                                warnings.Add($"LevelCorrectedByStats: main {mainStat.Key}={mainStat.Value} is only " +
+                                             $"legal at level {consistent} for cost {mainCost} (OCR read {level}); level corrected.");
+                                level = consistent.Value;
+                                flags.Add("LevelCorrectedByStats");
+                            }
+                            else if (!consistent.HasValue)
+                            {
+                                flags.Add("MainValueImpossible");
+                                warnings.Add($"MainValueImpossible: main {mainStat.Key}={mainStat.Value} cannot be produced " +
+                                             $"at any level for cost {mainCost} (expected {expectedMain} at level {level}).");
+                            }
+                        }
+                    }
+                }
+
+                if (secondMainStat != null)
+                {
+                    StatKey wantSecondary = EchoMainStats.SecondaryKey(mainCost);
+                    if (secondMainStat.Key != wantSecondary)
+                    {
+                        flags.Add("SecondMainStatInvalid");
+                        warnings.Add($"SecondMainStatInvalid: a cost {mainCost} echo's secondary main stat is " +
+                                     $"{wantSecondary}, not {secondMainStat.Key}.");
+                    }
+                    else
+                    {
+                        var expectedSecond = EchoMainStats.SecondaryValue(mainCost, rarity, level.Value);
+                        if (expectedSecond.HasValue && Math.Abs(secondMainStat.Value - expectedSecond.Value) > 0.51f)
+                            warnings.Add($"Second main stat {secondMainStat.Key}={secondMainStat.Value} differs from the " +
+                                         $"deterministic {expectedSecond} at level {level} (informational).");
+                    }
+                }
+            }
+
             // ── 8. Substats (Y-clustered slots + pixel fallback) ────────────
             // substatsBmp is a RAW color crop: StatPixelMatcher needs color,
             // never the binarized text path.
@@ -223,56 +583,202 @@ public class EchoRecognizer
                 var r = EchoRegions.SubstatSlot(i);
                 return (r.Y + r.Height / 2 - block.Y) / block.Height * slotRefH;
             }).ToArray();
-            int NearestSlot(double y)
-            {
-                int best = 0;
-                double bestDist = Math.Abs(y - slotCenters[0]);
-                for (int i = 1; i < 5; i++)
-                {
-                    double d = Math.Abs(y - slotCenters[i]);
-                    if (d < bestDist) { bestDist = d; best = i; }
-                }
-                return best;
-            }
+            // C-04: a line may only be slotted within 0.6 x the slot pitch of a
+            // slot centre; anything farther is an orphan, never a forced guess.
+            double slotMaxDistance = SubstatSlotter.MaxSlotDistance(slotCenters);
+            var orphanLines = new List<string>();
+            var slotCollisions = new List<int>();
+
+            var slotFilled = new bool[5];   // C-03: which slots produced an accepted row
+            var slotConf = new double?[5];  // D-01: engine confidence of the line that filled the slot
+            var slotEngine = new string?[5]; // D-06: which engine produced that line
             var slotLabels = new string?[5];
             var slotValues = new float?[5];
             var slotPercents = new bool[5];
             var slotValStrs = new string?[5];
             var slotWhole = new ParsedStat?[5];
 
-            foreach (var line in ocrLines)
+            // A slot's row counts as RESOLVED only when its roll is legal; an
+            // unresolved row (NotARoll / Ambiguous) stays a replaceable proposal.
+            bool SlotResolved(int slot) =>
+                slotWhole[slot] is { } r && TunableRolls.ResolveDetailed(r.Key, r.Value).Value != null;
+
+            // Assigns OCR lines to slots. Primary pass: first full row wins (C-04).
+            // F-38 retry pass: may also REPLACE an unresolved proposal with a row whose
+            // roll is legal - never the other way round.
+            void AssignLines(IEnumerable<OcrLineInfo> lines, bool replaceUnresolved)
             {
-                int slot = NearestSlot(line.Y + line.Height / 2);
-                string text = line.Text.Trim();
-                string normalized = StatParser.NormalizeOcrArtifacts(text);
-
-                // Tesseract emits merged "Label Value" rows (e.g. "ATK 7.9%");
-                // WinOcr emits split label/value lines. Try the merged parse first.
-                var whole = StatParser.ParseLine(normalized);
-                if (whole != null)
+                foreach (var line in lines)
                 {
-                    slotWhole[slot] = whole;
-                    continue;
-                }
+                    string text = line.Text.Trim();
 
-                // If line is a value (e.g. "8.4%", "150", "10.1%")
-                var valMatch = Regex.Match(normalized, @"^[-+]?\s*(\d+(?:[.,]\d+)?)\s*(%)?$");
-                if (valMatch.Success)
-                {
-                    if (float.TryParse(valMatch.Groups[1].Value.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float val))
+                    // C-04: headers/footers are excluded by pattern, not by luck.
+                    if (SubstatSlotter.IsHeaderLine(text)) continue;
+
+                    var (slot, slotDist) = SubstatSlotter.NearestSlot(line.Y + line.Height / 2, slotCenters);
+                    if (slotDist > slotMaxDistance)
                     {
-                        slotValues[slot] = val;
-                        slotPercents[slot] = valMatch.Groups[2].Success || normalized.Contains('%');
-                        slotValStrs[slot] = normalized;
+                        orphanLines.Add(text);
+                        continue;
+                    }
+
+                    string normalized = StatParser.NormalizeOcrArtifacts(text);
+
+                    // Tesseract emits merged "Label Value" rows (e.g. "ATK 7.9%");
+                    // WinOcr emits split label/value lines. Try the merged parse first.
+                    var whole = StatParser.ParseLine(normalized);
+                    if (whole != null)
+                    {
+                        if (slotWhole[slot] != null)
+                        {
+                            bool replaceable = replaceUnresolved && !SlotResolved(slot);
+                            bool better = TunableRolls.ResolveDetailed(whole.Key, whole.Value).Value != null;
+                            if (!replaceable || !better)
+                            {
+                                // C-04: two full rows never overwrite each other silently.
+                                slotCollisions.Add(slot + 1);
+                                continue;
+                            }
+                        }
+                        slotWhole[slot] = whole;
+                        slotConf[slot] = line.Confidence;
+                        slotEngine[slot] = line.Engine;
+                        continue;
+                    }
+
+                    // A split line whose slot already holds a full row is redundant.
+                    if (slotWhole[slot] != null)
+                    {
+                        slotCollisions.Add(slot + 1);
+                        continue;
+                    }
+
+                    // If line is a value (e.g. "8.4%", "150", "10.1%")
+                    var valMatch = Regex.Match(normalized, @"^[-+]?\s*(\d+(?:[.,]\d+)?)\s*(%)?$");
+                    if (valMatch.Success)
+                    {
+                        if (float.TryParse(valMatch.Groups[1].Value.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float val))
+                        {
+                            slotValues[slot] = val;
+                            slotPercents[slot] = valMatch.Groups[2].Success || normalized.Contains('%');
+                            slotValStrs[slot] = normalized;
+                            slotConf[slot] = line.Confidence;
+                            slotEngine[slot] = line.Engine;
+                        }
+                    }
+                    else
+                    {
+                        slotLabels[slot] = text;
+                        slotConf[slot] = line.Confidence;
+                        slotEngine[slot] = line.Engine;
                     }
                 }
-                else
+            }
+
+            AssignLines(ocrLines, replaceUnresolved: false);
+
+            int expectedSubs = EchoRules.ExpectedSubstatCount(level ?? 0);
+
+            // F-38: when the primary pass leaves too few RESOLVED rows, the global Otsu
+            // pass has eaten the labels (measured: idx042/043/085, where a local
+            // threshold keeps them separable). Retry the same block with the adaptive
+            // pass; retry rows still face every downstream check (key validity,
+            // uniqueness, main-stat duplicate, legal roll) in the row-building pass.
+            int resolvedPrimary = Enumerable.Range(0, 5).Count(SlotResolved);
+            if (TesseractOcr.IsAvailable && resolvedPrimary < expectedSubs)
+            {
+                try
                 {
-                    // Filter out UI headers like "Echo Skill"
-                    if (!Regex.IsMatch(normalized, @"echo\s*skill", RegexOptions.IgnoreCase))
-                        slotLabels[slot] = text;
+                    using var altBmp = EchoFieldPreprocessor.ProcessAdaptive(panel, EchoRegions.SubstatsBlock);
+                    var altLines = await TesseractOcr.RecognizeLinesWithBoundsAsync(
+                        altBmp, ScannerConfig.SubstatBlockPsm, TesseractOcr.TextWhitelist);
+                    if (altLines.Count > 0)
+                    {
+                        AssignLines(altLines, replaceUnresolved: true);
+                        int resolvedAfter = Enumerable.Range(0, 5).Count(SlotResolved);
+                        if (resolvedAfter > resolvedPrimary)
+                            warnings.Add($"SubstatBlockRetry: primary pass resolved {resolvedPrimary}/{expectedSubs} " +
+                                         $"substat slot(s); a local-threshold re-read recovered {resolvedAfter - resolvedPrimary}.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add("SubstatBlockRetry failed: " + ex.Message);
                 }
             }
+
+            // C-04: orphans and collisions are surfaced, never swallowed.
+            if (orphanLines.Count > 0)
+                warnings.Add($"OrphanLines: {orphanLines.Count} OCR line(s) fell outside every substat slot " +
+                             "and were not assigned: " + string.Join(" | ", orphanLines.Take(6)));
+
+            if (slotCollisions.Count > 0)
+            {
+                flags.Add("SlotCollision");
+                warnings.Add($"SlotCollision: substat slot(s) {string.Join(",", slotCollisions.Distinct().OrderBy(x => x))} " +
+                             "received competing OCR lines; kept the first full row.");
+            }
+
+            // C-07: legal substat keys only (data-driven from the roll tables), and
+            // no key may repeat within one echo.
+            // D-01: substat confidence comes from the engine's confidence for that row.
+            float LineConf(int s) => slotConf[s] is double c ? (float)c : 0.5f;
+
+            var seenSubstatKeys = new HashSet<StatKey>();
+            bool TryAcceptSubstat(StatKey candidate)
+            {
+                if (!TunableRolls.IsValidSubstatKey(candidate))
+                {
+                    flags.Add("InvalidSubstatKey");
+                    warnings.Add($"InvalidSubstatKey: '{candidate}' has no roll table, so it cannot be a " +
+                                 "substat; the row was rejected.");
+                    return false;
+                }
+                if (!seenSubstatKeys.Add(candidate))
+                {
+                    flags.Add("SubstatDuplicate");
+                    warnings.Add($"SubstatDuplicate: '{candidate}' appeared more than once in this echo; " +
+                                 "kept the first occurrence.");
+                    return false;
+                }
+                return true;
+            }
+
+            // C-05: an unresolvable roll stays a PROPOSAL (flagged), never a silently
+            // snapped value; E-02 will keep these out of exports.
+            void NoteRollState(TunableRolls.RollResolution resolution, StatKey statKey)
+            {
+                switch (resolution.State)
+                {
+                    // F-43: EXACT is the BEST outcome - a proven legal roll. It used to
+                    // fall into the default branch and be reported as "NotARoll: value is
+                    // not a legal roll", so nearly every substat in every scan carried a
+                    // false NotARoll flag/warning.
+                    case TunableRolls.RollState.Exact:
+                    case TunableRolls.RollState.Corrected:
+                        break;   // proven / uniquely recoverable - not a review case
+                    case TunableRolls.RollState.Ambiguous:
+                        flags.Add("AmbiguousRoll");
+                        warnings.Add($"AmbiguousRoll: '{statKey}' had {resolution.Candidates.Count} legal-roll " +
+                                     $"candidates ({string.Join("/", resolution.Candidates)}); kept as a proposal.");
+                        break;
+                    default:
+                        flags.Add("NotARoll");
+                        warnings.Add($"NotARoll: '{statKey}' value is not a legal roll and has no unique " +
+                                     "correction; kept as a proposal for review.");
+                        break;
+                }
+            }
+
+            // D-02 validation confidence: an exact roll is proven, a uniquely
+            // corrected one is inferred from OCR confusion, anything else is not
+            // acceptable evidence at all (the row stays a proposal).
+            static float RollConfidence(TunableRolls.RollResolution r) => r.State switch
+            {
+                TunableRolls.RollState.Exact => 1.00f,
+                TunableRolls.RollState.Corrected => 0.70f,
+                _ => 0.00f,
+            };
 
             var substats = new List<SubstatResult>();
             for (int s = 0; s < 5; s++)
@@ -280,15 +786,18 @@ public class EchoRecognizer
                 // Merged "Label Value" row (Tesseract style): key+value in one hit.
                 if (slotWhole[s] is { } whole)
                 {
-                    if (mainStat != null && whole.Key == mainStat.Key) continue; // no main-stat dup
+                    if (SubstatSlotter.IsMainStatDuplicate(mainStat, whole.Key, whole.Value)) continue; // drop only an exact main-stat duplicate
+                    if (!TryAcceptSubstat(whole.Key)) continue;
                     if (whole.Key != StatKey.Hp && whole.Key != StatKey.HpPercent &&
                         StatPixelMatcher.DetectHp(substatsBmp, s, 5))
                     {
                         warnings.Add($"Substat slot {s + 1}: OCR={whole.Key} but pixel matcher sees HP — kept OCR.");
                     }
-                    var (snappedW, snapConfW) = TunableRolls.Resolve(whole.Key, whole.Value);
-                    substats.Add(new SubstatResult(whole.Key.ToString(), whole.Value, snappedW,
-                        Math.Min(0.88f, snapConfW), $"{whole.RawLabel} {whole.RawValue}"));
+                    var rollW = TunableRolls.ResolveDetailed(whole.Key, whole.Value);
+                    NoteRollState(rollW, whole.Key);
+                    substats.Add(new SubstatResult(whole.Key.ToString(), whole.Value, rollW.Value,
+                        Math.Min(LineConf(s), RollConfidence(rollW)), $"{whole.RawLabel} {whole.RawValue}"));
+                    slotFilled[s] = true;
                     continue;
                 }
 
@@ -321,7 +830,8 @@ public class EchoRecognizer
                 if (key != null)
                 {
                     // Prevent main stat duplication in substats
-                    if (mainStat != null && key == mainStat.Key) continue;
+                    if (SubstatSlotter.IsMainStatDuplicate(mainStat, key.Value, numVal)) continue;
+                    if (!TryAcceptSubstat(key.Value)) continue;
 
                     // Pixel cross-check (§7): HP matcher runs on every slot in parallel
                     // with OCR. Disagreement is logged, never auto-overridden.
@@ -331,32 +841,136 @@ public class EchoRecognizer
                         warnings.Add($"Substat slot {s + 1}: OCR={key} but pixel matcher sees HP — kept OCR.");
                     }
 
-                    var (snapped, snapConf) = TunableRolls.Resolve(key.Value, numVal);
-                    var sub = new SubstatResult(key.Value.ToString(), numVal, snapped, Math.Min(conf, snapConf), $"{lbl} {numVal}{(isPercent ? "%" : "")}");
+                    var roll = TunableRolls.ResolveDetailed(key.Value, numVal);
+                    NoteRollState(roll, key.Value);
+                    var sub = new SubstatResult(key.Value.ToString(), numVal, roll.Value,
+                        Math.Min(Math.Min(conf, LineConf(s)), RollConfidence(roll)), $"{lbl} {numVal}{(isPercent ? "%" : "")}");
                     substats.Add(sub);
+                    slotFilled[s] = true;
                 }
             }
 
             string rawSubstatsOcr = string.Join("\n", ocrLines.Select(l => $"[y={l.Y:F0}, x={l.X:F0}] {l.Text}"));
 
 
+            // C-03: per-slot retry. A slot the union pass left empty gets its own
+            // tuned rect re-read (pad 2px, SingleLine) - full line first, then a
+            // value-only right crop (numbers) plus a label-only left crop (text).
+            // Accepted only if the label is a valid substat key (C-07) and the
+            // value is a legal roll (C-05). Cost guard: at most one retry per
+            // missing slot, and only when Tesseract is actually available.
+            int retryCount = 0, retryRecovered = 0;
+            var retrySlots = new List<int>();
+            if (TesseractOcr.IsAvailable)
+            {
+                static Bitmap CropFraction(Bitmap src, double x0, double x1)
+                {
+                    int left = (int)(src.Width * x0);
+                    int w = Math.Max(1, (int)(src.Width * x1) - left);
+                    var bmp = new Bitmap(w, src.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    using var g = Graphics.FromImage(bmp);
+                    g.DrawImage(src, new Rectangle(0, 0, w, src.Height),
+                        new Rectangle(left, 0, w, src.Height), GraphicsUnit.Pixel);
+                    return bmp;
+                }
+
+                for (int s = 0; s < expectedSubs && s < 5; s++)
+                {
+                    if (slotFilled[s]) continue;
+
+                    retryCount++;
+                    retrySlots.Add(s + 1);
+
+                    using var slotBmp = EchoFieldPreprocessor.Process(
+                        panel, EchoRegions.SubstatSlot(s + 1), FieldStrategy.Substat);
+
+                    ParsedStat? candidate = null;
+
+                    // (a) whole line, closed vocabulary
+                    string lineText = await TesseractOcr.RecognizeAsync(
+                        slotBmp, PageSegMode.SingleLine, TesseractOcr.TextWhitelist);
+                    candidate = StatParser.ParseLine(StatParser.NormalizeOcrArtifacts(lineText));
+                    if (candidate != null && !TunableRolls.IsValidSubstatKey(candidate.Key))
+                        candidate = null;
+
+                    // (b) label-only / value-only crops
+                    if (candidate == null)
+                    {
+                        string labelText, valueText;
+                        using (var labelBmp = CropFraction(slotBmp, 0.00, 0.65))
+                            labelText = await TesseractOcr.RecognizeAsync(
+                                labelBmp, PageSegMode.SingleLine, TesseractOcr.TextWhitelist);
+                        using (var valueBmp = CropFraction(slotBmp, 0.70, 1.00))
+                            valueText = await TesseractOcr.RecognizeAsync(
+                                valueBmp, PageSegMode.SingleLine, TesseractOcr.NumberWhitelist);
+
+                        string combined = (labelText.Trim() + " " + valueText.Trim()).Trim();
+                        if (combined.Length > 0)
+                        {
+                            candidate = StatParser.ParseLine(StatParser.NormalizeOcrArtifacts(combined));
+                            if (candidate != null && !TunableRolls.IsValidSubstatKey(candidate.Key))
+                                candidate = null;
+                        }
+                    }
+
+                    if (candidate == null) continue;
+                    if (SubstatSlotter.IsMainStatDuplicate(mainStat, candidate.Key, candidate.Value)) continue;
+                    if (seenSubstatKeys.Contains(candidate.Key)) continue;
+
+                    var retryRoll = TunableRolls.ResolveDetailed(candidate.Key, candidate.Value);
+                    if (!retryRoll.IsUsable) continue;   // C-05: only a legal roll is accepted
+
+                    seenSubstatKeys.Add(candidate.Key);
+                    slotFilled[s] = true;
+                    retryRecovered++;
+                    substats.Add(new SubstatResult(candidate.Key.ToString(), candidate.Value, retryRoll.Value,
+                        Math.Min(0.80f, RollConfidence(retryRoll)),
+                        $"retry: {candidate.RawLabel} {candidate.RawValue}"));
+                    warnings.Add($"Substat slot {s + 1} recovered by C-03 retry: {candidate.RawLabel} {candidate.RawValue}.");
+                }
+            }
+
+            if (retryCount > 0)
+                _log?.Invoke($"    [OCR] Substat retries: {retryCount} slot(s) retried, {retryRecovered} recovered.");
+
+            // D-06: substat provenance (engine + attempt).
+            for (int s = 0; s < 5 && s < substats.Count; s++)
+                diagnostics.Add(new EchoScanResult.FieldDiagnostics(
+                    $"substat{s + 1}", slotEngine[s] ?? "?", "SingleBlock", "Substat",
+                    retrySlots.Contains(s + 1) ? 2 : 1, rawSubstatsOcr, slotConf[s] ?? null, null));
+
+            // C-01: the substat count must match the level rule min(level/5, 5).
+            if (substats.Count < expectedSubs)
+            {
+                flags.Add("SubstatShort");
+                warnings.Add($"SubstatShort: level {level} expects {expectedSubs} substats, found {substats.Count} " +
+                             "(per-slot retry is TODO C-03).");
+            }
+            else if (substats.Count > expectedSubs)
+            {
+                // Excess: drop only entries that are invalid or duplicates - never blindly.
+                int removed = substats.RemoveAll(s =>
+                    !Enum.TryParse<StatKey>(s.Key, out var k) || k == StatKey.Unknown);
+                var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                removed += substats.RemoveAll(s => !seenKeys.Add(s.Key));
+
+                if (substats.Count > expectedSubs)
+                {
+                    flags.Add("SubstatExcess");
+                    warnings.Add($"SubstatExcess: level {level} expects {expectedSubs} substats, found {substats.Count}" +
+                                 (removed > 0 ? $" (removed {removed} invalid/duplicate entries)" : ""));
+                }
+            }
+
+
             // ── 9. Sonata detection ─────────────────────────────────────────
             // Primary: icon pixel-signature match (Tacet-Lab visual.ts port).
             // Fallback: Zone B OCR text parse of the "Sonata Effect" line.
-            string? sonataName    = null;
-            float   sonataConf    = 0f;
+            // Icon detection already ran before name matching (B-03); reuse it here.
+            string? sonataName    = sonataIconName;
+            float   sonataConf    = sonataIconConf;
+            string? sonataSource  = sonataIconName != null ? "Icon" : null;
             string  rawSonataOcr  = sonataZoneOcr.Trim();
-
-            using (var iconCrop = EchoRegions.CropRegion(panel, EchoRegions.SonataIcon))
-            {
-                // Raw color crop: the signature matcher needs color, never binarized text.
-                var (sigName, sigConf) = SonataSignatureMatcher.Match(iconCrop);
-                if (sigName != null && sigConf > ScannerConfig.SonataIconMinConfidence)
-                {
-                    sonataName = sigName;
-                    sonataConf = (float)sigConf;
-                }
-            }
 
             var sonataLines = sonataZoneOcr
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -366,12 +980,46 @@ public class EchoRecognizer
                 l => l.Contains("Sonata", StringComparison.OrdinalIgnoreCase) &&
                      l.Contains("Effect", StringComparison.OrdinalIgnoreCase));
 
-            // Only run the OCR text path when the icon matcher did not already win.
+            // F-45: arbitrate the icon against the panel text. The icon matcher ALWAYS
+            // returns a top-1 - including on families it cannot separate - so when the
+            // panel text names a legal set, the text wins. When both are legal the game's
+            // own label wins too; when only the icon is legal the icon stays.
+            bool IconLegal() => nameEntry == null || sonataIconName == null ||
+                nameEntry.Sonatas.Contains(sonataIconName, StringComparer.OrdinalIgnoreCase);
+            bool TextLegal() => nameEntry == null || sonataTextName == null ||
+                nameEntry.Sonatas.Contains(sonataTextName, StringComparer.OrdinalIgnoreCase);
+
             if (sonataName != null)
             {
-                // Icon signature match succeeded — keep it, skip OCR parse.
-                // Traceable in test output via warnings (Priority 3 re-run target).
+                sonataSource = "Icon";
                 warnings.Add($"Sonata from icon match: {sonataName} (conf {sonataConf:F2}).");
+
+                if (sonataTextName != null && !string.Equals(sonataTextName, sonataName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (TextLegal() && !IconLegal())
+                    {
+                        warnings.Add($"SonataTextOverride: the icon said '{sonataName}', which is not a legal set " +
+                                     $"for '{nameEntry?.Name}' (pool: {string.Join(", ", nameEntry?.Sonatas ?? [])}); " +
+                                     $"the panel text says '{sonataTextName}' -> using the text.");
+                        sonataName = sonataTextName;
+                        sonataConf = (float)sonataTextConf;
+                        sonataSource = "OcrText";
+                        flags.Remove("NameContradictsEvidence");
+                    }
+                    else if (TextLegal())
+                    {
+                        warnings.Add($"SonataTextOverride: icon '{sonataName}' vs panel text '{sonataTextName}' " +
+                                     $"(both legal for this echo); the game's own label is the text -> using '{sonataTextName}'.");
+                        sonataName = sonataTextName;
+                        sonataConf = (float)sonataTextConf;
+                        sonataSource = "OcrText";
+                    }
+                    else
+                    {
+                        warnings.Add($"SonataTextDisagrees: panel text '{sonataTextName}' is not a legal set for " +
+                                     $"'{nameEntry?.Name}'; kept the icon result '{sonataName}'.");
+                    }
+                }
             }
             else if (sonataHdrIdx >= 0 && sonataHdrIdx + 1 < sonataLines.Length)
             {
@@ -391,6 +1039,7 @@ public class EchoRecognizer
                     {
                         sonataName = matched;
                         sonataConf = score;
+                        sonataSource = "OcrText";
                         warnings.Add($"Sonata from OCR text: {sonataName} (conf {sonataConf:F2}).");
                     }
                     else
@@ -409,10 +1058,12 @@ public class EchoRecognizer
                 {
                     sonataName = nameEntry.Sonatas[0];
                     sonataConf = 0.50f; // low confidence, catalog-inferred
+                    sonataSource = "CatalogDefault";
                     warnings.Add("Sonata Effect header not found; using catalog default.");
                 }
                 else
                 {
+                    sonataSource = "None";
                     warnings.Add("Sonata Effect not detected.");
                 }
             }
@@ -431,17 +1082,32 @@ public class EchoRecognizer
                 ImageFile   = Path.GetFileName(imagePath),
                 ImagePath   = imagePath,
                 ScannedAt   = DateTime.UtcNow,
-                EchoName    = new FieldResult(nameEntry?.Name, nameScore, nameOcr.Replace('\n',' ').Trim()),
-                Cost        = new FieldResult(cost.HasValue ? (object?)cost.Value : null, nameEntry != null ? 0.95f : 0.5f),
-                Rarity      = new FieldResult(rarity > 0 ? (object?)rarity : null, rarity > 0 ? 0.88f : 0f),
-                Level       = new FieldResult(level.HasValue ? (object?)level.Value : null, level.HasValue ? 0.90f : 0f, levelOcr.Trim()),
+                EchoName    = new FieldResult(
+                                  nameEntry == null ? null
+                                  : (namePhantom ? "Phantom: " + nameEntry.Name : nameEntry.Name),
+                                  nameScore, nameOcr.Replace('\n',' ').Trim()),
+                Cost        = new FieldResult(cost.HasValue ? (object?)cost.Value : null, costConfidence),
+                Rarity      = new FieldResult(rarity, 1.0f, rarityProvenance),
+                Level       = new FieldResult(level.HasValue ? (object?)level.Value : null,
+                                              level.HasValue ? (float)(levelRead.Confidence ?? 0) : 0f, levelOcr.Trim()),
                 Sonata      = new FieldResult(sonataName, sonataConf, rawSonataOcr),
-                EquippedBy  = new FieldResult(equippedBy, equippedBy != null ? 0.90f : 0f, ownerZoneOcr.Trim()),
-                MainStatKey   = new FieldResult(mainStat?.Key.ToString(), mainStat != null ? 0.90f : 0f, mainStat?.RawLabel),
-                MainStatValue = new FieldResult(mainStat != null ? (object?)mainStat.Value : null, mainStat != null ? 0.88f : 0f, mainStat?.RawValue),
-                SecondMainStatKey   = new FieldResult(secondMainStat?.Key.ToString(), secondMainStat != null ? 0.90f : 0f, secondMainStat?.RawLabel),
-                SecondMainStatValue = new FieldResult(secondMainStat != null ? (object?)secondMainStat.Value : null, secondMainStat != null ? 0.88f : 0f, secondMainStat?.RawValue),
+                EquippedBy  = new FieldResult(equippedBy,
+                                              equippedBy != null ? (float)(ownerRead.Confidence ?? 0) : 0f, ownerZoneOcr.Trim()),
+                MainStatKey   = new FieldResult(mainStat?.Key.ToString(),
+                                                mainStat != null ? (float)(mainRead.Confidence ?? 0) : 0f, mainStat?.RawLabel),
+                MainStatValue = new FieldResult(mainStat != null ? (object?)mainStat.Value : null,
+                                                mainStat != null ? (float)(mainRead.Confidence ?? 0) : 0f, mainStat?.RawValue),
+                SecondMainStatKey   = new FieldResult(secondMainStat?.Key.ToString(),
+                                                      secondMainStat != null ? (float)(secondMainRead.Confidence ?? 0) : 0f, secondMainStat?.RawLabel),
+                SecondMainStatValue = new FieldResult(secondMainStat != null ? (object?)secondMainStat.Value : null,
+                                                      secondMainStat != null ? (float)(secondMainRead.Confidence ?? 0) : 0f, secondMainStat?.RawValue),
                 Substats    = substats,
+                Flags       = flags,
+                Diagnostics = diagnostics,
+                SonataSource = sonataSource,
+                SubstatRetries = retryCount,
+                SubstatRetrySlots = retrySlots,
+                SubstatRetriesRecovered = retryRecovered,
                 RawNameOcr       = nameOcr.Trim(),
                 RawMainStatOcr   = mainStatLine.Trim(),
                 RawSecondMainStatOcr = secondMainStatLine.Trim(),
@@ -468,7 +1134,11 @@ public class EchoRecognizer
     /// legacy enhance+upscale path whose numbers are preserved as measured.
     /// Set <c>ScannerConfig.UseWindowsOcrFallback=false</c> for QA Tesseract-only runs.
     /// </summary>
-    private static async Task<string> OcrRegionAsync(
+    /// <summary>One region read together with its provenance (D-01/D-06).</summary>
+    private sealed record RegionRead(
+        string Text, double? Confidence, string Engine, string Psm, string Preprocess, int Attempt);
+
+    private static async Task<RegionRead> OcrRegionAsync(
         Bitmap panel, RectangleF region, FieldStrategy strategy,
         PageSegMode mode, string? whitelist, Func<string, bool>? accept = null)
     {
@@ -476,56 +1146,59 @@ public class EchoRecognizer
         if (TesseractOcr.IsAvailable)
         {
             string t = "";
+            double? tConf = null;
             bool attempted = false;
             try
             {
                 using var tessBmp = EchoFieldPreprocessor.Process(panel, region, strategy);
-                t = await TesseractOcr.RecognizeAsync(tessBmp, mode, whitelist);
+                var (text, conf) = await TesseractOcr.RecognizeWithConfidenceAsync(tessBmp, mode, whitelist);
+                t = text; tConf = conf;
                 attempted = true;
                 if (!fallbackAllowed)
-                    return t;
+                    return new RegionRead(t, tConf, "Tesseract", mode.ToString(), strategy.ToString(), 1);
                 bool empty = ScannerConfig.FallbackOnEmptyTesseractResult &&
                     (string.IsNullOrWhiteSpace(t) || t.Trim().Length < ScannerConfig.OcrMinTextLength);
                 if (!empty && (accept == null || accept(t)))
-                    return t;
-                // Empty or grammar-rejected → fall through to Windows OCR.
+                    return new RegionRead(t, tConf, "Tesseract", mode.ToString(), strategy.ToString(), 1);
+                // Empty or grammar-rejected: fall through to Windows OCR.
             }
             catch
             {
                 if (!fallbackAllowed)
-                    return attempted ? t : string.Empty;
+                    return new RegionRead(attempted ? t : string.Empty, tConf, "Tesseract", mode.ToString(), strategy.ToString(), 1);
                 /* fall through to Windows OCR */
             }
             if (fallbackAllowed)
             {
-                string w = await WinOcrRegionAsync(panel, region);
+                var w = await WinOcrRegionAsync(panel, region);
                 // Prefer whichever attempt satisfies the grammar; Tesseract wins ties.
                 if (accept == null) return w;
-                if (accept(w)) return w;
-                if (accept(t)) return t;
+                if (accept(w.Text)) return w;
+                if (accept(t)) return new RegionRead(t, tConf, "Tesseract", mode.ToString(), strategy.ToString(), 1);
                 return w;
             }
-            return t;
+            return new RegionRead(t, tConf, "Tesseract", mode.ToString(), strategy.ToString(), 1);
         }
         else if (!fallbackAllowed)
         {
-            return string.Empty;
+            return new RegionRead(string.Empty, null, "none", mode.ToString(), strategy.ToString(), 1);
         }
         return await WinOcrRegionAsync(panel, region);
     }
 
     /// <summary>Legacy Windows-OCR path (EnhanceForOcr + Upscale2x).</summary>
-    private static async Task<string> WinOcrRegionAsync(Bitmap panel, RectangleF region)
+    private static async Task<RegionRead> WinOcrRegionAsync(Bitmap panel, RectangleF region)
     {
         using var bmp = PreprocessForOcr(panel, region);
-        return await WinOcr.RecognizeAsync(bmp);
+        // Windows OCR reports no confidence -> null, Engine=Win (D-01).
+        return new RegionRead(await WinOcr.RecognizeAsync(bmp), null, "Win", "-", "WinOcr(EnhanceForOcr+Upscale2x)", 2);
     }
 
     /// <summary>
     /// Name-strip OCR with per-engine routing (<see cref="ScannerConfig.NameEngine"/>).
     /// Windows-only is the measured default for the stylized name font.
     /// </summary>
-    private static async Task<string> OcrNameAsync(Bitmap panel)
+    private static async Task<RegionRead> OcrNameAsync(Bitmap panel)
     {
         switch (ScannerConfig.NameEngine)
         {
@@ -533,7 +1206,12 @@ public class EchoRecognizer
                 return await WinOcrRegionAsync(panel, EchoRegions.EchoName);
             case ScannerConfig.OcrEnginePreference.TesseractOnly:
                 using (var tessBmp = EchoFieldPreprocessor.Process(panel, EchoRegions.EchoName, FieldStrategy.Name))
-                    return await TesseractOcr.RecognizeAsync(tessBmp, ScannerConfig.NameRegionPsm, TesseractOcr.TextWhitelist);
+                {
+                    var (text, conf) = await TesseractOcr.RecognizeWithConfidenceAsync(
+                        tessBmp, ScannerConfig.NameRegionPsm, TesseractOcr.TextWhitelist);
+                    return new RegionRead(text, conf, "Tesseract",
+                        ScannerConfig.NameRegionPsm.ToString(), FieldStrategy.Name.ToString(), 1);
+                }
             default:
                 return await OcrRegionAsync(panel, EchoRegions.EchoName,
                     FieldStrategy.Name, ScannerConfig.NameRegionPsm, TesseractOcr.TextWhitelist);
@@ -589,12 +1267,51 @@ public class EchoRecognizer
         return (wlines, h);
     }
 
+    /// <summary>
+    /// F-45: read the set NAME out of the panel's "Sonata Effect" text. The icon alone
+    /// cannot separate some families (measured: Halo of Starry Radiance vs Pact of
+    /// Neonlight Leap, margin 0.0009 on captures the panel text proves are Pact), while
+    /// the game prints the set name in this zone on every echo. Scans every OCR line
+    /// (the header line itself often misses OCR) and returns the best known-set match.
+    /// </summary>
+    private static (string? Name, double Confidence) SonataFromZoneText(string zoneOcr, double threshold)
+    {
+        string? best = null;
+        double bestScore = 0;
+        foreach (string raw in (zoneOcr ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            // strip icon-glyph prefixes ("DO ", "OD ", "D ") and anything from "&"/"("/
+            // "@" onwards (the "(1/5)" counters and the effect prose).
+            string cleaned = Regex.Replace(raw, @"^[^A-Za-z]*", "");
+            cleaned = Regex.Replace(cleaned, @"^[A-Z]{1,3}\s+", "");
+            cleaned = Regex.Replace(cleaned, @"[&@(].*$", "").Trim();
+            cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+            if (cleaned.Length < 4) continue;
+
+            var (matched, score) = FuzzyMatcher.ClosestMatch(cleaned, GameDatabase.KnownSonatas, s => s, (float)threshold);
+            if (matched != null && score > bestScore)
+            {
+                best = matched;
+                bestScore = score;
+            }
+        }
+        return (best, bestScore);
+    }
+
     private static string CleanOcrText(string ocr)
         => Regex.Replace(ocr, @"[^\w\s%\.\-]", " ").Trim();
 
-    private static int? ParseLevel(string ocr)
+    /// <summary>
+    /// D-03: the level strip must parse as a WHOLE. The old anywhere-match happily took
+    /// the "1" out of "Lv.15 (+3)" or the "25" out of "25+7" - a partial match is not
+    /// evidence. Accepts "+25" / "Lv.15" / "Level 3"; everything else is null.
+    /// </summary>
+    public static int? ParseLevel(string ocr)
     {
-        var m = Regex.Match(ocr, @"(?:Lv\.?|Level|\+)?\s*(\d{1,2})", RegexOptions.IgnoreCase);
+        string s = (ocr ?? "").Trim();
+        s = Regex.Replace(s, @"^(?:Lv\.?|Level)\s*", "", RegexOptions.IgnoreCase).Trim();
+
+        var m = Regex.Match(s, @"^\+?\s*(\d{1,2})$");
         if (m.Success && int.TryParse(m.Groups[1].Value, out int v) && v is >= 0 and <= 25) return v;
         return null;
     }

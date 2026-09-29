@@ -7,6 +7,18 @@ using System.Text.Json.Serialization;
 
 namespace SonoroScore.Scanner;
 
+/// <summary>E-02 export strictness. Strict = anything degraded is quarantined.</summary>
+public enum ExportPolicy { Strict, IncludePartial }
+
+/// <summary>E-01: outcome of an export attempt - the DTO, or why it was refused.</summary>
+public sealed record ExportOutcome(ExportableEcho? Echo, IReadOnlyList<string> Rejected)
+{
+    public bool Ok => Echo != null;
+}
+
+/// <summary>E-03: one quarantined echo with the reasons it was refused.</summary>
+public sealed record ExportRejection(string ImageFile, IReadOnlyList<string> Reasons);
+
 /// <summary>
 /// Lossless-ish echo DTO shared by both exporters.
 /// Build via <see cref="FromScanResult"/> (CLI/debugger) or
@@ -25,29 +37,71 @@ public sealed record ExportableEcho(
     float MainStatValue,
     IReadOnlyList<(string Key, float Value)> Substats)
 {
-    public static ExportableEcho? FromScanResult(EchoScanResult scan)
+    /// <summary>
+    /// E-01/E-02: build an export DTO from a scan.
+    ///
+    /// Missing required fields and unusable substat rolls produce REJECTION REASONS -
+    /// never a plausible default (no "UNKNOWN", no cost 1, no level 0). Rarity is
+    /// exempt: it is a documented constant because the panel shows none (F-30).
+    ///
+    /// Under <see cref="ExportPolicy.Strict"/> any degradation quarantines the echo;
+    /// under <see cref="ExportPolicy.IncludePartial"/> only unusable substat ROWS are
+    /// dropped (never the whole echo), and the reasons are still reported.
+    /// </summary>
+    public static ExportOutcome FromScanResult(EchoScanResult scan, ExportPolicy policy = ExportPolicy.Strict)
     {
-        string name = EchoReviewCompat.ExtractString(scan.EchoName?.Value, "UNKNOWN");
-        int cost = EchoReviewCompat.ExtractInt(scan.Cost?.Value, 1);
-        int rarity = EchoReviewCompat.ExtractInt(scan.Rarity?.Value, 5);
-        int level = EchoReviewCompat.ExtractInt(scan.Level?.Value, 0);
-        string sonata = EchoReviewCompat.ExtractString(scan.Sonata?.Value, "");
-        string equipped = EchoReviewCompat.ExtractString(scan.EquippedBy?.Value, "");
-        string mainKey = EchoReviewCompat.ExtractString(scan.MainStatKey?.Value, "");
-        float mainVal = EchoReviewCompat.ExtractFloat(scan.MainStatValue?.Value, 0f);
+        var fatal = new List<string>();          // missing required fields
+        var degradations = new List<string>();   // unusable rows / count shortfall
 
-        if (string.IsNullOrWhiteSpace(mainKey) || string.Equals(mainKey, "Unknown", StringComparison.OrdinalIgnoreCase))
-            return null; // Tacet isEcho requires a valid mainStat; GOOD needs mainStatKey too.
+        string name = EchoReviewCompat.ExtractString(scan.EchoName?.Value, "");
+        if (string.IsNullOrWhiteSpace(name) || name.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase))
+            fatal.Add("name missing");
+
+        int cost = EchoReviewCompat.ExtractInt(scan.Cost?.Value, 0);
+        if (cost is not (1 or 3 or 4)) fatal.Add($"cost missing or invalid ({cost})");
+
+        int level = EchoReviewCompat.ExtractInt(scan.Level?.Value, -1);
+        if (level is < 0 or > 25) fatal.Add($"level missing or invalid ({level})");
+
+        string sonata = EchoReviewCompat.ExtractString(scan.Sonata?.Value, "");
+        if (string.IsNullOrWhiteSpace(sonata)) fatal.Add("sonata missing");
+
+        string mainKey = EchoReviewCompat.ExtractString(scan.MainStatKey?.Value, "");
+        if (string.IsNullOrWhiteSpace(mainKey) || mainKey.Equals("Unknown", StringComparison.OrdinalIgnoreCase))
+            fatal.Add("main stat missing"); // Tacet isEcho requires a valid mainStat
+
+        float mainVal = EchoReviewCompat.ExtractFloat(scan.MainStatValue?.Value, 0f);
+        if (mainVal <= 0) fatal.Add("main stat value missing");
+
+        // Rarity: documented constant - never a read value, never a rejection reason.
+        const int rarity = 5;
 
         var subs = new List<(string Key, float Value)>();
         foreach (var s in scan.Substats)
         {
-            if (string.IsNullOrWhiteSpace(s.Key) || string.Equals(s.Key, "Unknown", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(s.Key) || s.Key.Equals("Unknown", StringComparison.OrdinalIgnoreCase))
                 continue;
-            subs.Add((s.Key, s.Value));
+
+            if (s.SnappedValue == null)
+            {
+                degradations.Add($"substat '{s.Key}' has no accepted roll (raw {s.Value})");
+                continue; // E-02: only accepted data may be exported
+            }
+            subs.Add((s.Key, s.SnappedValue.Value));
         }
 
-        return new ExportableEcho(name, cost, rarity, level, sonata, equipped, mainKey, mainVal, subs);
+        int expected = EchoRules.ExpectedSubstatCount(level < 0 ? 0 : level);
+        if (subs.Count < expected)
+            degradations.Add($"substat count {subs.Count} is below the level rule ({expected})");
+
+        var reasons = fatal.Concat(degradations).ToList();
+        bool blocked = fatal.Count > 0 || (policy == ExportPolicy.Strict && degradations.Count > 0);
+        if (blocked) return new ExportOutcome(null, reasons);
+
+        string equipped = EchoReviewCompat.ExtractString(scan.EquippedBy?.Value, "");
+        return new ExportOutcome(
+            new ExportableEcho(name, cost, rarity, level, sonata, equipped, mainKey, mainVal, subs),
+            reasons);
     }
 }
 

@@ -401,21 +401,21 @@ internal class Program
             string statStr  = result.MainStatKey?.Value as string ?? "?";
             string stat2Str = result.SecondMainStatKey?.Value as string ?? "?";
             string conf     = result.EchoName?.Confidence.ToString("F2") ?? "—";
-            string icon = result.Errors.Count > 0 ? "x" : result.IsComplete ? "+" : "~";
+            string icon = result.Errors.Count > 0 ? "x" : result.NeedsReview ? "~" : "+";
             Log(result.Errors.Count > 0 ? "WARN" : "OK",
                 $"  [{done,3}/{imageFiles.Length}] {icon} {Path.GetFileName(imgPath)} -> {nameStr} (conf:{conf}) | {statStr} | 2nd:{stat2Str} | {result.Substats.Count} substats");
         }
 
         // ── Summary ─────────────────────────────────────────────────────────
         int identified = results.Count(r => r.EchoName?.Value != null);
-        int complete   = results.Count(r => r.IsComplete);
+        int complete   = results.Count(r => !r.NeedsReview);
         float nameRate = results.Count > 0 ? (float)identified / results.Count : 0;
         float statRate = results.Count > 0 ? (float)results.Count(r => r.MainStatKey?.Value != null) / results.Count : 0;
         float stat2Rate = results.Count > 0 ? (float)results.Count(r => r.SecondMainStatKey?.Value != null) / results.Count : 0;
         float subAvg   = results.Count > 0 ? (float)results.Average(r => r.Substats.Count) : 0;
         float sonataRate = results.Count > 0 ? (float)results.Count(r => r.Sonata?.Value != null) / results.Count : 0;
-        int sonataIcon = results.Count(r => r.Warnings.Any(w => w.StartsWith("Sonata from icon match")));
-        int sonataOcr = results.Count(r => r.Warnings.Any(w => w.StartsWith("Sonata from OCR text")));
+        int sonataIcon = results.Count(r => r.SonataSource == "Icon");
+        int sonataOcr = results.Count(r => r.SonataSource == "OcrText");
 
         var session = new ScanSessionResult
         {
