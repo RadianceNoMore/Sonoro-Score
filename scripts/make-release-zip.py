@@ -39,6 +39,10 @@ EXCLUDE_WPF_NATIVES = {
 
 README = """SonoroScore {version} - automatic echo scanner for Wuthering Waves
 
+Before first run: this build needs the free .NET Desktop Runtime 8 (x64),
+one-time install from https://dotnet.microsoft.com/download/dotnet/8.0
+(prefer zero installs? use the "-bundled" zip - it has the runtime inside.)
+
 1. Install the Interception driver (REQUIRED - SS refuses to scan without it):
    - Open a Command Prompt as Administrator and run:
        "SonoroScore-{version}\\Interception\\command line installer\\install-interception.exe" /install
@@ -62,12 +66,17 @@ NOTICES.md. The bundled Interception driver package is LGPL-3.0 for non-commerci
 use (license texts included).
 """
 
-LEAN_NOTE = """
+RUNTIME_PARA = """Before first run: this build needs the free .NET Desktop Runtime 8 (x64),
+one-time install from https://dotnet.microsoft.com/download/dotnet/8.0
+(prefer zero installs? use the "-bundled" zip - it has the runtime inside.)
 
-NOTE - this is the small "%V%" build: it needs the Microsoft .NET Desktop
-Runtime 8 (x64), a one-time install from
-https://dotnet.microsoft.com/download/dotnet/8.0 - the regular SonoroScore zip
-has the runtime bundled if you prefer zero installs.
+"""
+
+BUNDLED_NOTE = """
+
+NOTE - this is the BUNDLED build: it carries its own copy of the .NET runtime,
+so the .NET Desktop Runtime install is NOT needed (that is the size difference
+vs the regular zip, which is much smaller but needs that one-time install).
 """
 
 
@@ -76,7 +85,7 @@ def main() -> int:
     ap.add_argument("--version", default="1.0.0")
     ap.add_argument("--publish", default=os.path.join(REPO, "publish", "SonoroScore"))
     ap.add_argument("--variant", default="",
-                    help="suffix for the zip name, e.g. 'lean' (framework-dependent build)")
+                    help="suffix for the zip name, e.g. 'bundled' (self-contained build)")
     args = ap.parse_args()
 
     pub = args.publish
@@ -98,7 +107,8 @@ def main() -> int:
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         readme = README.replace("{version}", args.version)
         if args.variant:
-            readme += LEAN_NOTE.replace("%V%", args.variant)
+            readme = readme.replace(RUNTIME_PARA, "")
+            readme += BUNDLED_NOTE
         z.writestr(top + "README-FIRST.txt", readme)
         for root, dirs, files in os.walk(pub):
             dirs[:] = [d for d in dirs if d.lower() not in EXCLUDE_DIRS

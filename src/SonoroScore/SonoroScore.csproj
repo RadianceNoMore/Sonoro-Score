@@ -36,6 +36,12 @@
     </None>
   </ItemGroup>
 
+  <!-- x64-only app (WuWa has no 32-bit client): drop the x86 Tesseract natives
+       from publish output so folders and zips stay lean. -->
+  <Target Name="RemoveX86Natives" AfterTargets="Publish" Condition="Exists('$(PublishDir)x86')">
+    <RemoveDir Directories="$(PublishDir)x86" />
+  </Target>
+
   <ItemGroup>
     <ProjectReference Include="..\SonoroScore.Core\SonoroScore.Core.csproj" />
     <ProjectReference Include="..\SonoroScore.Scanner\SonoroScore.Scanner.csproj" />

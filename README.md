@@ -1,4 +1,4 @@
-# Sonoro-Score 🎵
+﻿# Sonoro-Score 🎵
 
 > **C# (.NET 8) automation & echo scanner suite for Wuthering Waves.**
 > Point it at the game and it captures your echo inventory, reads every panel with
@@ -16,12 +16,16 @@
 
 **You need:** Windows 10/11 (x64) · Wuthering Waves at **1080p** (16:9) ·
 the Interception driver (one-time install, bundled) · Administrator rights
-(SS asks for them — required to send input to the game).
+(SS asks for them — required to send input to the game) · the free
+**.NET Desktop Runtime 8 (x64)** — only for the regular zip (the `-bundled`
+zip has it inside).
 
 ### 1 · Get the app
 Download from
 [Releases](https://github.com/RadianceNoMore/Sonoro-Score/releases) and extract it
-anywhere. Everything else is bundled — no .NET install needed.
+anywhere. There are two flavors: the regular zip is a **~22 MB** download and needs
+the one-time .NET Desktop Runtime install above; the **`-bundled`** zip is bigger
+(~85 MB) but carries the runtime inside — zero installs, ideal for sharing.
 
 ### 2 · Scan
 1. Launch **`SonoroScore.exe`** and accept the Administrator prompt.
@@ -45,7 +49,7 @@ before START SCAN unlocks.
 ### If something's off
 | Symptom | Fix |
 | :--- | :--- |
-| START SCAN disabled, yellow box says **Interception required** | Install the driver (step 2) and reboot. |
+| START SCAN disabled, yellow box says **Interception required** | Install the bundled Interception driver and reboot (exact command in the zip's `README-FIRST.txt`). |
 | Window says **Tesseract required** | The extract is incomplete — re-extract the zip without deleting files. |
 | Scan starts, nothing moves in the game | Run SS as Administrator; keep the game focused during the scan. It's calibrated for **1080p, 16:9** (Borderless or Fullscreen). |
 | Studio says "No scan results found" | Point it at the session's `scan_results_*.json`, or reopen it from SS's **Open Review Studio** (it loads the newest session automatically). |
