@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -9,6 +9,15 @@ namespace SonoroScore.Scanner.Cli;
 
 internal class Program
 {
+    /// <summary>Find the repo root by walking up to SonoroScore.sln.</summary>
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "SonoroScore.sln")))
+            dir = dir.Parent;
+        return dir?.FullName ?? AppContext.BaseDirectory;
+    }
+
     static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -59,22 +68,20 @@ internal class Program
                 return await DiagNameCollisions(i + 1 < args.Length && !args[i + 1].StartsWith("--") ? args[++i] : null);
         }
 
-        // Default test suite location
+        // Default test suite location, resolved relative to the repo root (found by
+        // walking up to SonoroScore.sln) - no machine-specific paths.
         if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
         {
-            string defaultSession = @"C:\Users\Tina_\Documents\PlayingWithRepo\Sonoro-Score\publish\AlephalSonata\aleph_images\session_20260927_204453";
+            string baseImages = Path.Combine(RepoRoot(), "publish", "AlephalSonata", "aleph_images");
+            string defaultSession = Path.Combine(baseImages, "session_20260927_204453");
             if (Directory.Exists(defaultSession))
             {
                 targetDir = defaultSession;
             }
-            else
+            else if (Directory.Exists(baseImages))
             {
-                string baseImages = @"C:\Users\Tina_\Documents\PlayingWithRepo\Sonoro-Score\publish\AlephalSonata\aleph_images";
-                if (Directory.Exists(baseImages))
-                {
-                    var dirs = Directory.GetDirectories(baseImages);
-                    if (dirs.Length > 0) targetDir = dirs[0];
-                }
+                var dirs = Directory.GetDirectories(baseImages).OrderByDescending(d => d).ToArray();
+                if (dirs.Length > 0) targetDir = dirs[0];
             }
         }
 

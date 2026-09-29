@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Build the SonoroScore release zip.
 
 Everything the app needs at runtime lives in publish/SonoroScore/ - including the
@@ -28,6 +28,15 @@ EXCLUDE_FILES = {
 }
 EXCLUDE_DIRS = {"sessions"}   # per-user capture sessions
 
+# WinForms-only app: the WindowsDesktop runtime pack also carries WPF's native
+# libraries, which SS never loads (no UseWPF, no WPF namespaces in the source -
+# grep-verified). Dropping them from the zip saves ~8 MB; the extract-and-run
+# check covers it.
+EXCLUDE_WPF_NATIVES = {
+    "wpfgfx_cor3.dll", "PresentationNative_cor3.dll", "PenImc_cor3.dll",
+    "D3DCompiler_47_cor3.dll",
+}
+
 README = """SonoroScore {version} - automatic echo scanner for Wuthering Waves
 
 1. Install the Interception driver (REQUIRED - SS refuses to scan without it):
@@ -53,11 +62,21 @@ NOTICES.md. The bundled Interception driver package is LGPL-3.0 for non-commerci
 use (license texts included).
 """
 
+LEAN_NOTE = """
+
+NOTE - this is the small "%V%" build: it needs the Microsoft .NET Desktop
+Runtime 8 (x64), a one-time install from
+https://dotnet.microsoft.com/download/dotnet/8.0 - the regular SonoroScore zip
+has the runtime bundled if you prefer zero installs.
+"""
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default="1.0.0")
     ap.add_argument("--publish", default=os.path.join(REPO, "publish", "SonoroScore"))
+    ap.add_argument("--variant", default="",
+                    help="suffix for the zip name, e.g. 'lean' (framework-dependent build)")
     args = ap.parse_args()
 
     pub = args.publish
@@ -71,16 +90,21 @@ def main() -> int:
 
     dist = os.path.join(REPO, "dist")
     os.makedirs(dist, exist_ok=True)
-    zip_path = os.path.join(dist, f"SonoroScore-{args.version}-win64.zip")
+    suffix = f"-{args.variant}" if args.variant else ""
+    zip_path = os.path.join(dist, f"SonoroScore-{args.version}-win64{suffix}.zip")
     top = f"SonoroScore-{args.version}/"
 
     shipped, skipped = [], []
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-        z.writestr(top + "README-FIRST.txt", README.replace("{version}", args.version))
+        readme = README.replace("{version}", args.version)
+        if args.variant:
+            readme += LEAN_NOTE.replace("%V%", args.variant)
+        z.writestr(top + "README-FIRST.txt", readme)
         for root, dirs, files in os.walk(pub):
-            dirs[:] = [d for d in dirs if d.lower() not in EXCLUDE_DIRS]
+            dirs[:] = [d for d in dirs if d.lower() not in EXCLUDE_DIRS
+                       and not (root == pub and d.lower() == "x86")]
             for f in files:
-                if f in EXCLUDE_FILES or f.lower().endswith(".pdb"):
+                if f in EXCLUDE_FILES or f in EXCLUDE_WPF_NATIVES or f.lower().endswith(".pdb"):
                     skipped.append(os.path.relpath(os.path.join(root, f), pub))
                     continue
                 fp = os.path.join(root, f)

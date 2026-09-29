@@ -86,34 +86,30 @@ public partial class MainReviewForm : Form
             PopulateDropdowns();
             _statusLabel.Text = $"Database loaded ({_catalog.Length} echoes). Searching for scan sessions...";
 
-            // Auto-discover the latest scan session. The scanner writes to
-            // <app dir>\sessions; the legacy AlephalSonata root stays as a fallback
-            // so older captures remain reachable.
+            // Auto-discover the latest scan session: <app dir>\sessions, newest first.
+            // One rule only - a fresh install (no sessions yet) opens a blank studio.
             string sessionsRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sessions");
-            string legacyDir = @"C:\Users\Tina_\Documents\PlayingWithRepo\Sonoro-Score\publish\AlephalSonata\aleph_images";
-            string defaultDir = Directory.Exists(sessionsRoot) && Directory.GetDirectories(sessionsRoot).Length > 0
-                ? sessionsRoot
-                : legacyDir;
-            if (Directory.Exists(defaultDir))
+            if (Directory.Exists(sessionsRoot) && Directory.GetDirectories(sessionsRoot).Length > 0)
             {
-                var sessions = Directory.GetDirectories(defaultDir).OrderByDescending(d => d).ToArray();
-                if (sessions.Length > 0)
-                {
-                    // Check if JSON exists in latest session
-                    var jsonFiles = Directory.GetFiles(sessions[0], "test_scan_results_*.json")
-                        .Concat(Directory.GetFiles(sessions[0], "scan_results_*.json"))
-                        .OrderByDescending(f => f)
-                        .ToArray();
+                var sessions = Directory.GetDirectories(sessionsRoot).OrderByDescending(d => d).ToArray();
+                // Check if JSON exists in latest session
+                var jsonFiles = Directory.GetFiles(sessions[0], "test_scan_results_*.json")
+                    .Concat(Directory.GetFiles(sessions[0], "scan_results_*.json"))
+                    .OrderByDescending(f => f)
+                    .ToArray();
 
-                    if (jsonFiles.Length > 0)
-                    {
-                        await LoadJsonSessionAsync(jsonFiles[0]);
-                    }
-                    else
-                    {
-                        await LoadFolderSessionAsync(sessions[0]);
-                    }
+                if (jsonFiles.Length > 0)
+                {
+                    await LoadJsonSessionAsync(jsonFiles[0]);
                 }
+                else
+                {
+                    await LoadFolderSessionAsync(sessions[0]);
+                }
+            }
+            else
+            {
+                _statusLabel.Text = $"Database loaded ({_catalog.Length} echoes). No scan sessions yet - run a scan or use Open Folder / Load Scan JSON.";
             }
         }
         catch (Exception ex)

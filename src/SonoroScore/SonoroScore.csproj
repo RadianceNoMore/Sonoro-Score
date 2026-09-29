@@ -15,6 +15,9 @@
     <ApplicationIcon>..\..\assets\SS.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
+    <!-- The self-contained single-file exe embeds the whole .NET runtime; compressing
+         the bundle cuts it from ~170 MB to ~65 MB (decompressed on load). -->
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <!-- Landing-window logo (src/SS.jpg) - copied next to the exe and into publish. -->
