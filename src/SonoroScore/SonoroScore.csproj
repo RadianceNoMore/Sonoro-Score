@@ -18,6 +18,14 @@
   </PropertyGroup>
 
   <!-- Landing-window logo (src/SS.jpg) - copied next to the exe and into publish. -->
+  <!-- Interception user-mode library: loaded from the app directory at runtime. -->
+  <ItemGroup>
+    <None Include="..\..\assets\interception\x64\interception.dll" Link="interception.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
   <ItemGroup>
     <None Include="..\SS_Quaver.jpg" Link="SS_Quaver.jpg">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
