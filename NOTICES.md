@@ -1,4 +1,4 @@
-# Third-Party Notices
+﻿# Third-Party Notices
 
 Sonoro-Score incorporates code, data, and algorithms adapted from the following
 open-source projects. We are grateful to their authors.
@@ -48,3 +48,11 @@ Files carrying adapted code are marked with a header comment crediting Tacet-Lab
 The adapted Tacet-Lab portions above are governed by the GNU General Public
 License v3.0. Full text: <https://www.gnu.org/licenses/gpl-3.0.html>.
 Source: <https://github.com/DJ12421/Tacet-Lab> (LICENSE file in that repo).
+
+## Interception (input driver)
+
+The release package bundles the official Interception package
+(https://github.com/oblitum/Interception) verbatim, including its license texts.
+Interception is distributed under **LGPL-3.0 for non-commercial use**; commercial
+usage requires a separate license from the author. SS calls interception.dll at
+runtime to inject synthetic input into the game when the driver is installed.
