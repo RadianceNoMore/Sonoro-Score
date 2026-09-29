@@ -28,6 +28,7 @@ public sealed class ScannerForm : Form
 
     private readonly Label _status = new();
     private Label _pagesLabel = new();
+    private readonly TextBox _log = new();
     private readonly Label _version = new();
     private readonly Label _desc = new();
     private readonly Panel _yellow = new();
@@ -56,8 +57,8 @@ public sealed class ScannerForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
-        MinimumSize = new Size(796, 509);          // design size incl. frame
-        ClientSize = new Size(780, 470);
+        MinimumSize = new Size(676, 507);          // design size incl. frame
+        ClientSize = new Size(660, 468);            // window ~676x507 = exactly 4:3
         RestoreWindowState();
         BackColor = Color.White;
         KeyPreview = true;
@@ -85,7 +86,7 @@ public sealed class ScannerForm : Form
             {
                 Text = "SS", ForeColor = Color.FromArgb(40, 90, 170), BackColor = Color.Transparent,
                 Font = new Font("Segoe UI", 28, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter,
-                Location = new Point(46, 14), Size = new Size(134, 134),
+                Location = new Point(31, 14), Size = new Size(134, 134),
             };
             Controls.Add(mark);
         }
@@ -101,7 +102,7 @@ public sealed class ScannerForm : Form
                 {
                     Image = new Bitmap(img),   // detach from the file so it stays replaceable
                     SizeMode = PictureBoxSizeMode.Zoom,
-                    Location = new Point(46, 14), Size = new Size(134, 134),
+                    Location = new Point(31, 14), Size = new Size(134, 134),
                 };
                 Controls.Add(pic);
                 logoShown = true;
@@ -115,25 +116,25 @@ public sealed class ScannerForm : Form
         _version.ForeColor = Color.FromArgb(130, 130, 130);
         _version.Font = new Font("Segoe UI", 8.5f);
         _version.TextAlign = ContentAlignment.MiddleRight;
-        _version.Size = new Size(120, 18);
+        _version.Size = new Size(60, 18);
         Controls.Add(_version);
 
         _status.Text = "Ready";
         _status.Location = new Point(18, 148);   // bottom edge (170) = START button top
-        _status.Size = new Size(190, 22);
+        _status.Size = new Size(160, 22);
         _status.Font = new Font("Segoe UI", 10, FontStyle.Bold);
         _status.ForeColor = Color.FromArgb(40, 130, 60);
         Controls.Add(_status);
 
         // Right column: one-line description + the yellow notice
         _desc.Text = "Scans your WuWa echo stats";
-        _desc.Location = new Point(228, 22);
-        _desc.Size = new Size(534, 24);
+        _desc.Location = new Point(198, 22);
+        _desc.Size = new Size(444, 24);
         _desc.Font = new Font("Segoe UI", 11, FontStyle.Bold);
         Controls.Add(_desc);
 
-        _yellow.Location = new Point(228, 50);
-        _yellow.Size = new Size(534, 96);
+        _yellow.Location = new Point(198, 50);
+        _yellow.Size = new Size(444, 100);
         _yellow.BackColor = Color.FromArgb(255, 246, 214);
         _yellow.BorderStyle = BorderStyle.FixedSingle;
         _warning.Text =
@@ -141,10 +142,10 @@ public sealed class ScannerForm : Form
             "    Keep Wuthering Waves focused while scanning \u2014 don't touch mouse or keyboard.\r\n" +
             "    Synthetic input to the game can be blocked unless SS runs as Administrator.";
         _warning.Location = new Point(8, 6);
-        _warning.Size = new Size(518, 60);
+        _warning.Size = new Size(428, 66);
         _warning.Font = new Font("Segoe UI", 8.5f);
-        _backend.Location = new Point(8, 66);
-        _backend.Size = new Size(518, 22);
+        _backend.Location = new Point(8, 72);
+        _backend.Size = new Size(428, 22);
         _backend.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
         _yellow.Controls.Add(_backend);
         _yellow.Controls.Add(_warning);
@@ -161,26 +162,39 @@ public sealed class ScannerForm : Form
         _start.Click += async (_, _) => { if (_running) StopScan(); else await StartScanAsync(); };
         Controls.Add(_start);
 
-        var srcLabel = new Label { Text = "Source:", Location = new Point(228, 166), Size = new Size(60, 20), Font = new Font("Segoe UI", 9) };
+        var srcLabel = new Label { Text = "Source:", Location = new Point(198, 160), Size = new Size(60, 20), Font = new Font("Segoe UI", 9) };
         _modeOverworld.Text = "Overworld \u2014 SS navigates";
-        _modeOverworld.Location = new Point(288, 164);
-        _modeOverworld.Size = new Size(230, 22);
+        _modeOverworld.Location = new Point(258, 158);
+        _modeOverworld.Size = new Size(200, 22);
         _modeOverworld.Checked = true;
         _modeCharScreen.Text = "Character screen \u2014 just scan";
-        _modeCharScreen.Location = new Point(288, 188);
-        _modeCharScreen.Size = new Size(230, 22);
+        _modeCharScreen.Location = new Point(258, 182);
+        _modeCharScreen.Size = new Size(200, 22);
         Controls.Add(srcLabel);
         Controls.Add(_modeOverworld);
         Controls.Add(_modeCharScreen);
 
-        _pagesLabel = new Label { Text = "Pages to scroll:", Location = new Point(540, 166), Size = new Size(100, 20), Font = new Font("Segoe UI", 9) };
-        _pages.Location = new Point(640, 163);
+        _pagesLabel = new Label { Text = "Pages to scroll:", Location = new Point(420, 160), Size = new Size(100, 20), Font = new Font("Segoe UI", 9) };
+        _pages.Location = new Point(524, 157);
         _pages.Size = new Size(70, 24);
         _pages.Minimum = 1;
         _pages.Maximum = 500;
         _pages.Value = 3;
         Controls.Add(_pagesLabel);
         Controls.Add(_pages);
+
+        // Live status log - fills the middle so there is no dead white space, and
+        // shows the capture/OCR process while it runs.
+        _log.Location = new Point(18, 230);
+        _log.Size = new Size(624, 130);
+        _log.Multiline = true;
+        _log.ReadOnly = true;
+        _log.ScrollBars = ScrollBars.Vertical;
+        _log.WordWrap = false;
+        _log.BackColor = Color.FromArgb(250, 250, 250);
+        _log.BorderStyle = BorderStyle.FixedSingle;
+        _log.Font = new Font("Consolas", 8.5f);
+        Controls.Add(_log);
 
         // OCR bar
         _bar.Location = new Point(18, 244);
@@ -210,6 +224,14 @@ public sealed class ScannerForm : Form
         Controls.Add(_studio);
     }
 
+    private void AppendLog(string line)
+    {
+        if (_log.TextLength > 20000) _log.Clear();   // keep it bounded on huge runs
+        _log.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + line + "\r\n");
+        _log.SelectionStart = _log.TextLength;
+        _log.ScrollToCaret();
+    }
+
     // ── resizable layout + remembered window state ───────────────────────────
 
     private const int MarginX = 18;
@@ -223,8 +245,8 @@ public sealed class ScannerForm : Form
     {
         int right = ClientSize.Width - MarginX;
 
-        _desc.Width = right - 228;
-        _yellow.Width = right - 228;
+        _desc.Width = right - 198;
+        _yellow.Width = right - 198;
         _warning.Width = _yellow.Width - 16;
         _backend.Width = _yellow.Width - 16;
 
@@ -246,6 +268,10 @@ public sealed class ScannerForm : Form
 
         _version.Left = right - _version.Width;
         _version.Top = bottom - 22;
+
+        // log fills the middle between the options and the progress bar
+        _log.Width = right - MarginX;
+        _log.Height = Math.Max(40, (_bar.Top - 12) - _log.Top);
     }
 
     protected override void OnResize(EventArgs e)
@@ -390,24 +416,32 @@ public sealed class ScannerForm : Form
         _sessionDir = CaptureSession.CreateSessionDirectory(SessionRoot);
         _results = null;
         _cts = new CancellationTokenSource();
+        _log.Clear();
 
         var captureProgress = new Progress<CaptureProgress>(p =>
         {
             _status.Text = "Capturing\u2026";
             _status.ForeColor = Color.FromArgb(40, 90, 170);
             _progressLabel.Text = $"Capturing page {p.Page + 1} \u2014 row {p.Row + 1} col {p.Col + 1} \u2014 {p.Captured} card(s) saved";
+            AppendLog($"captured p{p.Page + 1} r{p.Row + 1} c{p.Col + 1}  ({p.Captured} total)");
         });
         var ocrProgress = new Progress<ScanProgress>(p =>
         {
             _bar.Value = p.Total == 0 ? 0 : (int)(100.0 * p.Done / p.Total);
             _status.Text = "Reading panels\u2026";
             _progressLabel.Text = $"OCR {(_bar.Value)} %  ({p.Done} / {p.Total})  \u2014 {p.ImageFile}";
+            string nm = p.Result.EchoName?.Value as string ?? "?";
+            AppendLog($"ocr {p.Done}/{p.Total}  {p.ImageFile}  \u2192  {nm}");
         });
 
         var pages = (int)_pages.Value;
         var overworld = _modeOverworld.Checked;
         var sessionDir = _sessionDir!;
         var ct = _cts.Token;
+
+        AppendLog("session: " + sessionDir);
+        AppendLog((overworld ? "mode: Overworld (SS navigates)" : "mode: Character screen (in place)")
+                  + $"  \u00b7  pages: {pages}");
 
         try
         {
@@ -449,6 +483,7 @@ public sealed class ScannerForm : Form
             _status.Text = "Done";
             _status.ForeColor = Color.FromArgb(40, 130, 60);
             _progressLabel.Text = $"OCR 100 % \u2014 {total} echoes read, {flagged} flagged for review \u2014 {sessionDir}";
+            AppendLog($"done: {total} echoes read, {flagged} flagged");
             _export.Enabled = total > 0;
         }
         catch (OperationCanceledException)
