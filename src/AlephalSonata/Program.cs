@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -192,8 +192,7 @@ internal class Program
                     var delayStr = Console.ReadLine()?.Trim();
                     int captureDelay = int.TryParse(delayStr, out int cd) && cd >= 0 ? cd : 50;
 
-                    string sessionDir = Path.Combine(imagesDir, $"session_{DateTime.Now:yyyyMMdd_HHmmss}");
-                    Directory.CreateDirectory(sessionDir);
+                    string sessionDir = CaptureSession.CreateSessionDirectory(imagesDir);
 
                     Log("INFO", $"Dataset destination: {sessionDir}");
                     Log("INFO", $"Capture plan: {p6} pages ({p6 * 15} cards max), scroll: {scrollTicks} ticks, pre-render delay: {captureDelay} ms.");

@@ -1,4 +1,4 @@
-## .NET build artifacts
+﻿## .NET build artifacts
 bin/
 obj/
 publish/
@@ -17,3 +17,5 @@ _ReSharper*/
 .DS_Store
 Thumbs.db
 
+## Release artifacts (attached to GitHub releases, not committed)
+dist/

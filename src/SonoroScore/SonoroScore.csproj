@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -8,8 +8,22 @@
     <RootNamespace>SonoroScore</RootNamespace>
     <AssemblyName>SonoroScore</AssemblyName>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- SS has its own version, separate from AS (repo props stay shared). -->
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <ApplicationIcon>..\..\assets\SS.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
   </PropertyGroup>
+
+  <!-- Landing-window logo (src/SS.jpg) - copied next to the exe and into publish. -->
+  <ItemGroup>
+    <None Include="..\SS_Quaver.jpg" Link="SS_Quaver.jpg">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\SonoroScore.Core\SonoroScore.Core.csproj" />

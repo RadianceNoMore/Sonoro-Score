@@ -1,4 +1,4 @@
-// Ac 2026 RadianceNoMore (Sonoro-Score, MIT).
+﻿// Ac 2026 RadianceNoMore (Sonoro-Score, MIT).
 // E-04: validate the payloads WE build against the rules Tacet-Lab itself enforces,
 // BEFORE anything is written. Rules mirrored from
 //   ../Tacet-Lab/src/storage/database.ts      (validateAccount / isEcho)
@@ -48,6 +48,18 @@ public static class PayloadValidator
 
             RequireString(problems, root, "envelope", "gameDataVersion");
             RequireString(problems, root, "envelope", "exportedAt");
+
+            // validateAccount (schemaVersion 7): every other collection must exist.
+            foreach (var collection in new[] { "characters", "weapons", "builds", "teams",
+                                               "equippedLoadouts", "theorycraftBuilds",
+                                               "optimizerProfiles", "optimizerRuns" })
+                if (!root.TryGetProperty(collection, out var arr) || arr.ValueKind != JsonValueKind.Array)
+                    problems.Add($"envelope: {collection} must be an array (Tacet validateAccount)");
+
+            if (!root.TryGetProperty("settings", out var settings) || settings.ValueKind != JsonValueKind.Object)
+                problems.Add("envelope: settings must be an object (Tacet validateAccount)");
+            else
+                ValidateSettings(problems, settings);
 
             if (!root.TryGetProperty("echoes", out var echoes) || echoes.ValueKind != JsonValueKind.Array)
                 return problems.Count > 0 ? problems : ["envelope: echoes must be an array"];
@@ -102,10 +114,80 @@ public static class PayloadValidator
                 if (!e.TryGetProperty("source", out var src) || src.ValueKind != JsonValueKind.String
                     || !Sources.Contains(src.GetString()))
                     problems.Add($"{where}: source must be one of {string.Join('/', Sources)}");
+
+                // isEcho: equippedBy/equippedByName accept `undefined` or a string -
+                // a JSON null is INVALID (F-48: the exporter used to write null).
+                foreach (var optional in new[] { "equippedBy", "equippedByName" })
+                    if (e.TryGetProperty(optional, out var opt) && opt.ValueKind != JsonValueKind.String)
+                        problems.Add($"{where}: {optional} must be a string when present (null is invalid for Tacet)");
             }
         }
 
         return problems;
+    }
+
+    // ── isSettings mirror (database.ts) ────────────────────────────────────────
+
+    private static readonly HashSet<string> TacetStatKeys = new(
+        Enum.GetNames<StatKey>().Where(n => n != nameof(StatKey.Unknown))
+            .Select(n => char.ToLowerInvariant(n[0]) + n.Substring(1)), StringComparer.Ordinal);
+
+    private static void ValidateSettings(List<string> problems, JsonElement s)
+    {
+        RequireString(problems, s, "settings", "displayName");
+        RequireBool(problems, s, "settings", "privacyMode");
+
+        if (s.TryGetProperty("uid", out var uid) && uid.ValueKind != JsonValueKind.String)
+            problems.Add("settings: uid must be a string when present");
+
+        if (!s.TryGetProperty("background", out var bg) || bg.ValueKind != JsonValueKind.String
+            || bg.GetString() is not ("signal" or "tacet" or "plain"))
+            problems.Add("settings: background must be signal/tacet/plain");
+
+        if (s.TryGetProperty("roverGender", out var rg) && rg.ValueKind != JsonValueKind.String)
+            problems.Add("settings: roverGender must be a string when present");
+        else if (rg.ValueKind == JsonValueKind.String && rg.GetString() is not ("male" or "female"))
+            problems.Add("settings: roverGender must be male or female");
+
+        if (!s.TryGetProperty("scanIntervalMs", out var iv) || iv.ValueKind != JsonValueKind.Number
+            || iv.GetDouble() < 250 || iv.GetDouble() > 10_000)
+            problems.Add("settings: scanIntervalMs must be a number 250..10000");
+
+        ValidateWeights(problems, s, "scoreWeights", 0, double.MaxValue);
+        ValidateWeights(problems, s, "characterSubstatWeights", 0, 4);
+
+        if (s.TryGetProperty("characterEnergyRegenMinimums", out var erm))
+        {
+            if (erm.ValueKind != JsonValueKind.Object)
+                problems.Add("settings: characterEnergyRegenMinimums must be an object");
+            else
+                foreach (var v in erm.EnumerateObject())
+                    if (v.Value.ValueKind != JsonValueKind.Number || v.Value.GetDouble() < 0 || v.Value.GetDouble() > 500)
+                        problems.Add($"settings: characterEnergyRegenMinimums.{v.Name} must be 0..500");
+        }
+    }
+
+    /// <summary>name -> { statKey: weight } maps (scoreWeights / characterSubstatWeights).</summary>
+    private static void ValidateWeights(List<string> problems, JsonElement s, string name, double min, double max)
+    {
+        if (!s.TryGetProperty(name, out var map)) return;
+        if (map.ValueKind != JsonValueKind.Object)
+        {
+            problems.Add($"settings: {name} must be an object");
+            return;
+        }
+        foreach (var entry in map.EnumerateObject())
+        {
+            if (entry.Value.ValueKind != JsonValueKind.Object)
+            {
+                problems.Add($"settings: {name}.{entry.Name} must be an object");
+                continue;
+            }
+            foreach (var w in entry.Value.EnumerateObject())
+                if (!TacetStatKeys.Contains(w.Name) || w.Value.ValueKind != JsonValueKind.Number
+                    || w.Value.GetDouble() < min || w.Value.GetDouble() > max)
+                    problems.Add($"settings: {name}.{entry.Name}.{w.Name} must be a known stat key with a numeric weight");
+        }
     }
 
     // ----------------------------------------------------------------- GOOD v3

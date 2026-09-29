@@ -171,6 +171,7 @@ public class AutoNavigator
         int scrollTicks = -34,
         int preAnimationCaptureDelayMs = 50,
         Action<int, int, int, string>? cardCaptured = null,
+        IProgress<CaptureProgress>? progress = null,
         CancellationToken ct = default)
     {
         if (!WindowManager.GetGameBounds(out var bounds))
@@ -219,9 +220,10 @@ public class AutoNavigator
                     if (bmp != null)
                     {
                         totalCaptured++;
-                        string filename = $"echo_p{page + 1:D2}_r{r + 1:D2}_c{c + 1:D2}_idx{totalCaptured:D3}.png";
+                        string filename = CaptureNaming.FileName(page, r, c, totalCaptured);
                         string fullPath = ScreenCapturer.SaveBitmap(bmp, outputDirectory, filename);
                         cardCaptured?.Invoke(page, r, c, fullPath);
+                        progress?.Report(new CaptureProgress(page, r, c, totalCaptured, maxPages, fullPath));
                     }
 
                     // Small cadence pacing

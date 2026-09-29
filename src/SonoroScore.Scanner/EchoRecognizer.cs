@@ -59,6 +59,33 @@ public class EchoRecognizer
         return await RecognizePanelAsync(panel, Path.GetFileName(panelPath));
     }
 
+    /// <summary>
+    /// Scan every echo capture in a directory - the same enumeration the CLI uses
+    /// ("echo_*.png" ordered by name) - reporting progress once per image. Results
+    /// keep that order. Recognition itself is untouched: pure orchestration for
+    /// front-ends (the new GUI landing window).
+    /// </summary>
+    public async Task<List<EchoScanResult>> ScanDirectoryAsync(
+        string directory, IProgress<ScanProgress>? progress = null, int limit = 0, CancellationToken ct = default)
+    {
+        var images = Directory.GetFiles(directory, "echo_*.png")
+            .OrderBy(f => f)
+            .Take(limit > 0 ? limit : int.MaxValue)
+            .ToArray();
+
+        var results = new List<EchoScanResult>(images.Length);
+        int done = 0;
+        foreach (var imagePath in images)
+        {
+            ct.ThrowIfCancellationRequested();
+            var scan = await RecognizeAsync(imagePath);
+            results.Add(scan);
+            done++;
+            progress?.Report(new ScanProgress(done, images.Length, Path.GetFileName(imagePath), scan));
+        }
+        return results;
+    }
+
     private async Task<EchoScanResult> RecognizeBitmapAsync(string imagePath, Bitmap full)
     {
         // Our captured images ARE already the full WuWa window frame.

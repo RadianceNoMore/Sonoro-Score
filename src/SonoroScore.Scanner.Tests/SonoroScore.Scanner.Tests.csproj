@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SonoroScore.Scanner\SonoroScore.Scanner.csproj" />
+    <ProjectReference Include="..\SonoroScore.Core\SonoroScore.Core.csproj" />
   </ItemGroup>
 
   <!-- Deterministic OCR dependencies: ONE pinned tessdata model, shared with the apps, so

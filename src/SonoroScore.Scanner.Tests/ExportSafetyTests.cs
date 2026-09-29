@@ -1,4 +1,4 @@
-// Ac 2026 RadianceNoMore (Sonoro-Score, MIT).
+﻿// Ac 2026 RadianceNoMore (Sonoro-Score, MIT).
 // E-01/E-02 export-safety pins: missing fields are REJECTED (never defaulted),
 // only accepted roll values may be exported, and rarity is the documented constant.
 
@@ -194,5 +194,66 @@ public sealed class ExportSafetyTests
         var problems = PayloadValidator.ValidateTacet(bad);
 
         Assert.Contains(problems, p => p.Contains("maxSubStatsForLevel(5) = 1"));
+    }
+
+    [Fact]
+    public void TacetExport_OmitsOptionalFields_InsteadOfWritingNull()
+    {
+        // F-48: Tacet's isEcho accepts `undefined` or a string for equippedBy /
+        // equippedByName - a JSON null fails validateAccount, so the whole backup is
+        // rejected. The exporter must OMIT them when unknown.
+        var outcome = ExportableEcho.FromScanResult(Scan());
+        Assert.NotNull(outcome.Echo);
+
+        string json = TacetLabExporter.Export([outcome.Echo!], out _);
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var e0 = doc.RootElement.GetProperty("echoes")[0];
+
+        Assert.False(e0.TryGetProperty("equippedBy", out _), "equippedBy must be omitted when unknown");
+        Assert.False(e0.TryGetProperty("equippedByName", out _), "equippedByName must be omitted when unknown");
+        Assert.Empty(PayloadValidator.ValidateTacet(json));
+    }
+
+    [Fact]
+    public void TacetValidator_RejectsNullOptionalFields_AndBadSettings()
+    {
+        // The self-check used to let equippedBy:null through - that is exactly how the
+        // broken payload shipped once. Pin both the null rule and the settings mirror.
+        const string withNull = """
+        {"schemaVersion":7,"gameDataVersion":"x","exportedAt":"y",
+         "echoes":[{"id":"a","name":"b","cost":3,"rarity":5,"level":0,"sonata":"s",
+                    "mainStat":{"key":"atk","value":1},"subStats":[],"locked":false,
+                    "excluded":false,"equippedBy":null,"createdAt":1,"source":"scan"}],
+         "characters":[],"weapons":[],"builds":[],"teams":[],"equippedLoadouts":[],
+         "theorycraftBuilds":[],"optimizerProfiles":[],"optimizerRuns":[],
+         "settings":{"displayName":"R","privacyMode":false,"background":"signal",
+                     "scanIntervalMs":900,"scoreWeights":{}}}
+        """;
+        var problems = PayloadValidator.ValidateTacet(withNull);
+        Assert.Contains(problems, pr => pr.Contains("equippedBy"));
+
+        const string badSettings = """
+        {"schemaVersion":7,"gameDataVersion":"x","exportedAt":"y",
+         "echoes":[],
+         "characters":[],"weapons":[],"builds":[],"teams":[],"equippedLoadouts":[],
+         "theorycraftBuilds":[],"optimizerProfiles":[],"optimizerRuns":[],
+         "settings":{"displayName":"R","privacyMode":false,"background":"neon",
+                     "scanIntervalMs":100,"scoreWeights":{}}}
+        """;
+        var problems2 = PayloadValidator.ValidateTacet(badSettings);
+        Assert.Contains(problems2, pr => pr.Contains("background"));
+        Assert.Contains(problems2, pr => pr.Contains("scanIntervalMs"));
+
+        // and a missing collection is caught too
+        const string missingCollection = """
+        {"schemaVersion":7,"gameDataVersion":"x","exportedAt":"y",
+         "echoes":[],
+         "characters":[],"weapons":[],"builds":[],"teams":[],
+         "theorycraftBuilds":[],"optimizerProfiles":[],"optimizerRuns":[],
+         "settings":{"displayName":"R","privacyMode":false,"background":"signal",
+                     "scanIntervalMs":900,"scoreWeights":{}}}
+        """;
+        var problems3 = PayloadValidator.ValidateTacet(missingCollection);
+        Assert.Contains(problems3, pr => pr.Contains("equippedLoadouts"));
     }
 }

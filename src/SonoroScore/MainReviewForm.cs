@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -86,8 +86,14 @@ public partial class MainReviewForm : Form
             PopulateDropdowns();
             _statusLabel.Text = $"Database loaded ({_catalog.Length} echoes). Searching for scan sessions...";
 
-            // Auto-discover the latest scan session in publish/AlephalSonata/aleph_images
-            string defaultDir = @"C:\Users\Tina_\Documents\PlayingWithRepo\Sonoro-Score\publish\AlephalSonata\aleph_images";
+            // Auto-discover the latest scan session. The scanner writes to
+            // <app dir>\sessions; the legacy AlephalSonata root stays as a fallback
+            // so older captures remain reachable.
+            string sessionsRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sessions");
+            string legacyDir = @"C:\Users\Tina_\Documents\PlayingWithRepo\Sonoro-Score\publish\AlephalSonata\aleph_images";
+            string defaultDir = Directory.Exists(sessionsRoot) && Directory.GetDirectories(sessionsRoot).Length > 0
+                ? sessionsRoot
+                : legacyDir;
             if (Directory.Exists(defaultDir))
             {
                 var sessions = Directory.GetDirectories(defaultDir).OrderByDescending(d => d).ToArray();

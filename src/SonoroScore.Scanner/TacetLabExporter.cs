@@ -1,4 +1,4 @@
-// © 2026 RadianceNoMore (Sonoro-Score, MIT).
+﻿// © 2026 RadianceNoMore (Sonoro-Score, MIT).
 // Tacet-Lab backup envelope reverse-engineered from Tacet-Lab
 // (https://github.com/DJ12421/Tacet-Lab, GPL-3.0):
 //   src/storage/database.ts → exportAccount() / validateAccount()
@@ -40,8 +40,15 @@ public static class TacetLabExporter
         [property: JsonPropertyName("subStats")] List<TacetStatLine> SubStats,
         [property: JsonPropertyName("locked")] bool Locked,
         [property: JsonPropertyName("excluded")] bool Excluded,
-        [property: JsonPropertyName("equippedBy")] string? EquippedBy,
-        [property: JsonPropertyName("equippedByName")] string? EquippedByName,
+        // Tacet's isEcho accepts `undefined` or a string for these - a JSON null FAILS
+        // (found by running our export through Tacet's own validator, F-48). Omit when
+        // unknown instead of writing null.
+        [property: JsonPropertyName("equippedBy")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? EquippedBy,
+        [property: JsonPropertyName("equippedByName")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? EquippedByName,
         [property: JsonPropertyName("createdAt")] long CreatedAt,
         [property: JsonPropertyName("source")] string Source);
 
@@ -108,7 +115,7 @@ public static class TacetLabExporter
                 string? tk = TacetStatKeys.ToTacetKey(k);
                 if (tk == null || !seen.Add(tk)) continue; // Tacet rejects duplicate substat keys
                 if (subs.Count >= 5) break;
-                subs.Add(new TacetStatLine(tk, v));
+                subs.Add(new TacetStatLine(tk, Math.Round(v, 2)));
             }
 
             string safeName = new string(e.Name.Where(char.IsLetterOrDigit).ToArray());
@@ -123,7 +130,7 @@ public static class TacetLabExporter
                 Rarity: e.Rarity,
                 Level: e.Level,
                 Sonata: e.Sonata,
-                MainStat: new TacetStatLine(mainKey, e.MainStatValue),
+                MainStat: new TacetStatLine(mainKey, Math.Round(e.MainStatValue, 2)),
                 SubStats: subs,
                 Locked: false,
                 Excluded: false,
